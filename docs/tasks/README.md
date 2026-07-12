@@ -15,7 +15,7 @@ Conventions: Hexagonal Architecture, `uv`, dependency direction `Channels → Ag
 - [ ] [01 — Repo scaffolding, tooling & folder structure](01-repo-scaffolding.md) `[MVP]`
 - [ ] [02 — Docker Compose local dev (Postgres + Redis)](02-docker-compose-local-dev.md) `[MVP]`
 - [ ] [03 — Configuration, env & secrets (fail-fast)](03-configuration-and-secrets.md) `[MVP]`
-- [ ] [04 — Open decisions: confirm starting values](04-open-decisions.md) `[MVP]`
+- [x] [04 — Open decisions: confirm starting values](04-open-decisions.md) `[MVP]`
 - [ ] [05 — Architecture Decision Records](05-architecture-decision-records.md) `[MVP]`
 
 ## Phase 1 — Shared & Domain (no infra)
