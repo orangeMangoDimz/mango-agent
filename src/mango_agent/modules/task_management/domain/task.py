@@ -92,7 +92,8 @@ class Task:
         return replace(self, status=status, updated_at=now, done_at=done_at)
 
     def assign(self, assigned_by: UserId | None, assigned_to: UserId | None) -> Task:
-        return replace(self, 
+        return replace(
+            self,
             assigned_by=assigned_by,
             assigned_to=assigned_to,
             updated_at=Timestamp.now(),

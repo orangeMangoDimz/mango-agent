@@ -117,9 +117,7 @@ def test_state_approve_proposal_wrong_user_fails() -> None:
 def test_state_approve_proposal_wrong_operation_fails() -> None:
     user_id = UserId.generate()
     state = _state(user_id)
-    proposal = PendingProposal.create(
-        OperationId.generate(), "Create task", expires_at=_future()
-    )
+    proposal = PendingProposal.create(OperationId.generate(), "Create task", expires_at=_future())
     state = state.set_proposal(proposal)
 
     result = state.approve_proposal(user_id, OperationId.generate(), Timestamp.now())

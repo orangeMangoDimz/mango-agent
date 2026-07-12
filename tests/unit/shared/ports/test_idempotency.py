@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from mango_agent.shared.domain.ids import OperationId, UserId
+from mango_agent.shared.domain.ids import EntityId, OperationId, UserId
 from mango_agent.shared.ports.actor_scope import ActorScope
 from mango_agent.shared.ports.idempotency import IdempotencyKey, IdempotencyRepository
 
@@ -12,6 +12,7 @@ from mango_agent.shared.ports.idempotency import IdempotencyKey, IdempotencyRepo
 class FakeIdempotencyRepository(IdempotencyRepository):
     def __init__(self) -> None:
         self._operations: dict[IdempotencyKey, OperationId] = {}
+        self._results: dict[IdempotencyKey, EntityId] = {}
 
     async def claim_event(
         self,
@@ -34,6 +35,21 @@ class FakeIdempotencyRepository(IdempotencyRepository):
         key: IdempotencyKey,
     ) -> OperationId | None:
         return self._operations.get(key)
+
+    async def record_result(
+        self,
+        actor: ActorScope,
+        key: IdempotencyKey,
+        result_resource_id: EntityId,
+    ) -> None:
+        self._results[key] = result_resource_id
+
+    async def lookup_result(
+        self,
+        actor: ActorScope,
+        key: IdempotencyKey,
+    ) -> EntityId | None:
+        return self._results.get(key)
 
 
 @pytest.fixture

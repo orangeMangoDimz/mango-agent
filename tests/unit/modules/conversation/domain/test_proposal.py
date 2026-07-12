@@ -47,9 +47,7 @@ def test_proposal_consume() -> None:
 
 
 def test_proposal_revise_increments_version() -> None:
-    proposal = PendingProposal.create(
-        OperationId.generate(), "Create task", expires_at=_future()
-    )
+    proposal = PendingProposal.create(OperationId.generate(), "Create task", expires_at=_future())
     revised = proposal.revise("Create task Buy ripe mangoes", expires_at=_future(120))
     assert revised.version == 2
     assert revised.consumed is False
