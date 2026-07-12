@@ -64,12 +64,10 @@ services:
     restart: unless-stopped
 
   mango-migrate:
-    # Placeholder one-shot migration service. The real migration command and
-    # schema arrive in task 15. Run via: docker compose --profile migrate run --rm mango-migrate
     build:
       context: .
       dockerfile: docker/Dockerfile
-    command: ["mango-agent", "migrate"]
+    command: ["alembic", "upgrade", "head"]
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql://mango:mango@postgres:5432/mango}
     depends_on:

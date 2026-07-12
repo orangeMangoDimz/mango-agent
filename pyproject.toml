@@ -5,6 +5,8 @@ description = "Multi-user personal AI agent for managing projects and tasks via 
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "alembic>=1.18.5",
+    "asyncpg>=0.31.0",
     "pydantic",
     "pydantic-settings",
     "python-dotenv",
@@ -49,6 +51,10 @@ addopts = "-ra"
 python_version = "3.13"
 strict = true
 files = ["src/mango_agent"]
+
+[[tool.mypy.overrides]]
+module = ["asyncpg", "asyncpg.*"]
+ignore_missing_imports = true
 
 [tool.importlinter]
 root_packages = ["mango_agent"]
