@@ -3,14 +3,25 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from typing import final
 
 from mango_agent.modules.identity.domain.provider import Provider
 from mango_agent.modules.identity.domain.provider_identity import ProviderIdentity
 from mango_agent.modules.identity.domain.user import User
 from mango_agent.shared.domain.ids import UserId
+from mango_agent.shared.domain.value_objects import PaginatedResult, Pagination
 from mango_agent.shared.ports.actor_scope import ActorScope
 
-__all__ = ["UserRepository", "ProviderIdentityRepository"]
+__all__ = ["UserRepository", "ProviderIdentityRepository", "UserSearchQuery"]
+
+
+@final
+@dataclass(frozen=True, slots=True)
+class UserSearchQuery:
+    """Search criteria for the user repository."""
+
+    display_name_contains: str | None = None
 
 
 class UserRepository(ABC):
@@ -32,6 +43,15 @@ class UserRepository(ABC):
         provider_user_id: str,
     ) -> User:
         """Resolve an internal user by provider identity."""
+
+    @abstractmethod
+    async def search(
+        self,
+        actor: ActorScope,
+        query: UserSearchQuery,
+        pagination: Pagination,
+    ) -> PaginatedResult[User]:
+        """Search users by display name substring."""
 
 
 class ProviderIdentityRepository(ABC):

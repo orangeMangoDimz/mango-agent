@@ -12,10 +12,11 @@ from mango_agent.modules.identity.domain.user import User
 from mango_agent.modules.identity.ports.repositories import (
     ProviderIdentityRepository,
     UserRepository,
+    UserSearchQuery,
 )
 from mango_agent.shared.domain.errors import ConflictError, NotFoundError, ValidationError
 from mango_agent.shared.domain.ids import UserId
-from mango_agent.shared.domain.value_objects import Timestamp
+from mango_agent.shared.domain.value_objects import PaginatedResult, Pagination, Timestamp
 from mango_agent.shared.ports.actor_scope import ActorScope
 
 
@@ -84,6 +85,14 @@ class PostgresUserRepository(UserRepository):
         if row is None:
             raise NotFoundError("user not found for provider identity")
         return _user_from_row(row)
+
+    async def search(
+        self,
+        actor: ActorScope,
+        query: UserSearchQuery,
+        pagination: Pagination,
+    ) -> PaginatedResult[User]:
+        raise NotImplementedError("search is not implemented for PostgreSQL yet")
 
 
 class PostgresProviderIdentityRepository(ProviderIdentityRepository):

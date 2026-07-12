@@ -198,7 +198,5 @@ class ConversationState:
 
     def _scope(self) -> str:
         return (
-            f"{self.bot_id}:"
-            f"{self.participant.provider.value}:"
-            f"{self.participant.provider_user_id}"
+            f"{self.bot_id}:{self.participant.provider.value}:{self.participant.provider_user_id}"
         )

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import final
 
 from mango_agent.shared.domain.errors import ValidationError
-from mango_agent.shared.domain.ids import OperationId
+from mango_agent.shared.domain.ids import EntityId, OperationId
 from mango_agent.shared.ports.actor_scope import ActorScope
 
 __all__ = ["IdempotencyKey", "IdempotencyRepository"]
@@ -62,3 +62,20 @@ class IdempotencyRepository(ABC):
         key: IdempotencyKey,
     ) -> OperationId | None:
         """Return the recorded operation id for a key, if any."""
+
+    @abstractmethod
+    async def record_result(
+        self,
+        actor: ActorScope,
+        key: IdempotencyKey,
+        result_resource_id: EntityId,
+    ) -> None:
+        """Record the id of the resource produced by the operation."""
+
+    @abstractmethod
+    async def lookup_result(
+        self,
+        actor: ActorScope,
+        key: IdempotencyKey,
+    ) -> EntityId | None:
+        """Return the recorded result resource id for a key, if any."""

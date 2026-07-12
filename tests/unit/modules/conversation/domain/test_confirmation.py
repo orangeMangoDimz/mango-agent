@@ -25,9 +25,7 @@ def test_confirmation_create() -> None:
 
 def test_confirmation_empty_operation_type_raises() -> None:
     with pytest.raises(ValidationError):
-        PendingConfirmation.create(
-            OperationId.generate(), "   ", "task-123", expires_at=_future()
-        )
+        PendingConfirmation.create(OperationId.generate(), "   ", "task-123", expires_at=_future())
 
 
 def test_confirmation_empty_target_ref_raises() -> None:

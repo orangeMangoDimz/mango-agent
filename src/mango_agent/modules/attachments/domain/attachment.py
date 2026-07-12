@@ -127,12 +127,11 @@ class Attachment:
             AttachmentLifecycleStatus.PENDING_METADATA,
             AttachmentLifecycleStatus.UPLOADED,
         ):
-            raise ConflictError(
-                f"cannot attach while status is {self.lifecycle_status.value}"
-            )
+            raise ConflictError(f"cannot attach while status is {self.lifecycle_status.value}")
         if now is None:
             now = Timestamp.now()
-        return replace(self, 
+        return replace(
+            self,
             task_id=task_id,
             lifecycle_status=AttachmentLifecycleStatus.ATTACHED,
             updated_at=now,
