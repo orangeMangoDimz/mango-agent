@@ -103,6 +103,22 @@ class AppConfig(BaseModel):
     logging: LoggingConfig
 
 
+class WorkerConfig(BaseModel):
+    """Configuration subset for background workers that do not need channel/model access."""
+
+    instance: WorkerInstanceConfig
+    postgres: PostgresConfig
+    redis: RedisConfig
+    r2: R2Config
+    logging: LoggingConfig
+
+
+class WorkerInstanceConfig(_BaseSettings):
+    """Minimal instance identity for workers."""
+
+    bot_instance: str
+
+
 def _provided(value: str | SecretStr | None) -> bool:
     if value is None:
         return False
@@ -212,5 +228,54 @@ def load_config() -> AppConfig:
         r2=r2,
         langsmith=langsmith,
         agent_workflow=agent_workflow,
+        logging=logging_cfg,
+    )
+
+
+def load_worker_config() -> WorkerConfig:
+    """Load the minimal configuration required by background workers."""
+    errors: list[str] = []
+    instance = _try_build(WorkerInstanceConfig, errors)
+    postgres = _try_build(PostgresConfig, errors)
+    redis = _try_build(RedisConfig, errors)
+    r2 = _try_build(R2Config, errors)
+    logging_cfg = _try_build(LoggingConfig, errors)
+
+    if instance is not None:
+        _require_non_empty(errors, {"bot_instance": instance.bot_instance})
+
+    if postgres is not None:
+        _require_non_empty(errors, {"database_url": postgres.database_url})
+
+    if redis is not None:
+        _require_non_empty(errors, {"redis_url": redis.redis_url})
+
+    if r2 is not None:
+        r2_fields = [
+            _provided(r2.r2_account_id),
+            _provided(r2.r2_access_key_id),
+            _provided(r2.r2_secret_access_key),
+            _provided(r2.r2_bucket),
+        ]
+        if 0 < sum(r2_fields) < len(r2_fields):
+            errors.append(
+                "  - R2 config is all-or-nothing: set R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, "
+                "R2_SECRET_ACCESS_KEY, and R2_BUCKET together"
+            )
+
+    if errors:
+        raise ConfigError("worker configuration is missing or invalid:\n" + "\n".join(errors))
+
+    assert instance is not None
+    assert postgres is not None
+    assert redis is not None
+    assert r2 is not None
+    assert logging_cfg is not None
+
+    return WorkerConfig(
+        instance=instance,
+        postgres=postgres,
+        redis=redis,
+        r2=r2,
         logging=logging_cfg,
     )

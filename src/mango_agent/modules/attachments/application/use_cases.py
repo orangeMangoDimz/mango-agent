@@ -8,6 +8,7 @@ from typing import final
 
 from mango_agent.modules.attachments.domain import (
     Attachment,
+    AttachmentEvent,
     AttachmentLifecycleStatus,
     StorageProvider,
 )
@@ -106,12 +107,21 @@ class RegisterPendingUpload:
             await self.storage.delete(object_key)
         except Exception:
             orphan = attachment.transition_to(AttachmentLifecycleStatus.ORPHANED)
+            event = AttachmentEvent.pending_upload_failed(
+                attachment_id=attachment.id,
+                object_key=object_key,
+                bucket_name=attachment.bucket_name,
+                storage_provider=attachment.storage_provider,
+            )
             uow = self.uow_factory()
             with suppress(Exception):
                 await uow.begin()
                 attachments = uow.attachments
                 assert attachments is not None
                 await attachments.register_pending(actor, orphan)
+                event_log = uow.attachment_events
+                assert event_log is not None
+                await event_log.record_event(event)
                 await uow.commit()
             return Result.failure(
                 InternalError(

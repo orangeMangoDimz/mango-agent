@@ -38,8 +38,14 @@ _VALID_TRANSITIONS = {
         AttachmentLifecycleStatus.ATTACHED,
     },
     AttachmentLifecycleStatus.CLEANUP_PENDING: {AttachmentLifecycleStatus.DELETED},
-    AttachmentLifecycleStatus.REJECTED: {AttachmentLifecycleStatus.DELETED},
-    AttachmentLifecycleStatus.REJECTED_BY_VALIDATION: {AttachmentLifecycleStatus.DELETED},
+    AttachmentLifecycleStatus.REJECTED: {
+        AttachmentLifecycleStatus.DELETED,
+        AttachmentLifecycleStatus.CLEANUP_PENDING,
+    },
+    AttachmentLifecycleStatus.REJECTED_BY_VALIDATION: {
+        AttachmentLifecycleStatus.DELETED,
+        AttachmentLifecycleStatus.CLEANUP_PENDING,
+    },
     AttachmentLifecycleStatus.EXPIRED: {
         AttachmentLifecycleStatus.CLEANUP_PENDING,
         AttachmentLifecycleStatus.DELETED,

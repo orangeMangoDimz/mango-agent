@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import TracebackType
+
 from mango_agent.modules.task_management.domain import Project, Status, Task
 from mango_agent.modules.task_management.ports.repositories import (
     ProjectRepository,
@@ -246,3 +248,18 @@ class FakeUnitOfWork(UnitOfWork):
 
     async def rollback(self) -> None:
         self.rolled_back = True
+
+    async def __aenter__(self) -> FakeUnitOfWork:
+        await self.begin()
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        if exc is None:
+            await self.commit()
+        else:
+            await self.rollback()

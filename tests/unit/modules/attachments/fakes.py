@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import timedelta
+from types import TracebackType
 from typing import final
 
 from mango_agent.modules.attachments.domain import (
     Attachment,
+    AttachmentEvent,
+    AttachmentEventStatus,
     AttachmentLifecycleStatus,
 )
 from mango_agent.modules.attachments.ports import (
@@ -16,6 +20,7 @@ from mango_agent.modules.attachments.ports import (
     PresignedUrl,
     UploadRequest,
 )
+from mango_agent.modules.attachments.ports.cleanup import AttachmentEventLog
 from mango_agent.modules.task_management.domain.enums import Status
 from mango_agent.modules.task_management.domain.project import Project
 from mango_agent.modules.task_management.domain.task import Task
@@ -26,7 +31,7 @@ from mango_agent.shared.domain.errors import (
     UnauthorizedError,
     ValidationError,
 )
-from mango_agent.shared.domain.ids import AttachmentId, ProjectId, TaskId
+from mango_agent.shared.domain.ids import AttachmentEventId, AttachmentId, ProjectId, TaskId
 from mango_agent.shared.domain.value_objects import PaginatedResult, Pagination, Timestamp
 from mango_agent.shared.ports.actor_scope import ActorScope
 from mango_agent.shared.ports.unit_of_work import UnitOfWork
@@ -160,6 +165,49 @@ class FakeAttachmentRepository(AttachmentRepository):
         self._attachments[attachment_id] = updated
         return updated
 
+    async def list_cleanup_eligible(
+        self,
+        now: Timestamp,
+        batch_size: int,
+    ) -> Sequence[Attachment]:
+        eligible_statuses = {
+            AttachmentLifecycleStatus.REJECTED,
+            AttachmentLifecycleStatus.REJECTED_BY_VALIDATION,
+            AttachmentLifecycleStatus.EXPIRED,
+            AttachmentLifecycleStatus.ORPHANED,
+            AttachmentLifecycleStatus.CLEANUP_PENDING,
+        }
+        items = tuple(
+            a
+            for a in self._attachments.values()
+            if a.lifecycle_status in eligible_statuses
+            or (a.expires_at is not None and a.expires_at <= now)
+        )
+        return items[:batch_size]
+
+
+@final
+@dataclass
+class FakeAttachmentEventLog(AttachmentEventLog):
+    _events: dict[AttachmentEventId, AttachmentEvent] = field(default_factory=dict)
+
+    async def record_event(self, event: AttachmentEvent) -> AttachmentEvent:
+        self._events[event.id] = event
+        return event
+
+    async def list_pending(self, limit: int) -> Sequence[AttachmentEvent]:
+        items = sorted(
+            (e for e in self._events.values() if e.status == AttachmentEventStatus.PENDING),
+            key=lambda e: e.created_at.value,
+        )
+        return tuple(items[:limit])
+
+    async def mark_processed(self, event_id: AttachmentEventId) -> None:
+        event = self._events.get(event_id)
+        if event is None:
+            raise NotFoundError("event not found")
+        self._events[event_id] = event.mark_processed()
+
 
 @final
 @dataclass
@@ -242,9 +290,11 @@ class FakeUnitOfWork(UnitOfWork):
         self,
         attachment_repository: FakeAttachmentRepository | None = None,
         task_repository: FakeTaskRepository | None = None,
+        event_log: FakeAttachmentEventLog | None = None,
     ) -> None:
         self.attachments = attachment_repository or FakeAttachmentRepository()
         self.tasks = task_repository or FakeTaskRepository()
+        self.attachment_events = event_log or FakeAttachmentEventLog()
         self.begun = False
         self.committed = False
         self.rolled_back = False
@@ -257,3 +307,18 @@ class FakeUnitOfWork(UnitOfWork):
 
     async def rollback(self) -> None:
         self.rolled_back = True
+
+    async def __aenter__(self) -> FakeUnitOfWork:
+        await self.begin()
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        if exc is None:
+            await self.commit()
+        else:
+            await self.rollback()

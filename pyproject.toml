@@ -9,10 +9,13 @@ dependencies = [
     "alembic>=1.18.5",
     "anthropic>=0.116.0",
     "asyncpg>=0.31.0",
+    "celery>=5.5.0",
     "dependency-injector>=4.45.0",
     "langsmith>=0.10.2",
     "langchain>=1.0.0",
     "langgraph>=1.0.0",
+    "loguru>=0.7.3",
+    "prometheus-client>=0.21.0",
     "pydantic",
     "pydantic-settings",
     "python-dotenv",
@@ -88,6 +91,18 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = ["discord", "discord.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["celery", "celery.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["loguru", "loguru.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["prometheus_client", "prometheus_client.*"]
 ignore_missing_imports = true
 
 [tool.importlinter]

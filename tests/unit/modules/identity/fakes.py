@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import TracebackType
+
 from mango_agent.modules.identity.domain.provider import Provider
 from mango_agent.modules.identity.domain.provider_identity import ProviderIdentity
 from mango_agent.modules.identity.domain.user import User
@@ -113,3 +115,18 @@ class FakeIdentityUnitOfWork(UnitOfWork):
 
     async def rollback(self) -> None:
         self.rolled_back = True
+
+    async def __aenter__(self) -> FakeIdentityUnitOfWork:
+        await self.begin()
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        if exc is None:
+            await self.commit()
+        else:
+            await self.rollback()

@@ -60,5 +60,10 @@ class AttachmentId(EntityId):
 
 
 @final
+class AttachmentEventId(EntityId):
+    """Identifies an attachment lifecycle event."""
+
+
+@final
 class OperationId(EntityId):
     """Identifies a business operation / idempotency scope."""

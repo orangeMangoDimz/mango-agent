@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 import telegram
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
@@ -13,6 +15,8 @@ from mango_agent.shared.channel_contracts import (
     ResponseKind,
 )
 from mango_agent.shared.domain.errors import MangoError
+from mango_agent.shared.infrastructure.logging import logger
+from mango_agent.shared.infrastructure.metrics import METRICS
 from mango_agent.shared.ports.actor_scope import ActorScope
 
 
@@ -71,32 +75,50 @@ async def send_response(
 ) -> None:
     """Render a normalized response as one or more Telegram messages."""
 
-    reply_to = int(response.reply_to.message_id) if response.reply_to else None
-    text = response.text
+    started = time.perf_counter()
+    outcome = "success"
+    try:
+        reply_to = int(response.reply_to.message_id) if response.reply_to else None
+        text = response.text
 
-    if response.kind in {ResponseKind.PROPOSAL, ResponseKind.CONFIRMATION}:
+        if response.kind in {ResponseKind.PROPOSAL, ResponseKind.CONFIRMATION}:
+            if text is None:
+                raise TelegramDeliveryError(f"{response.kind.value} response requires text")
+            markup = _approval_markup(response.approval_actions)
+            await bot.send_message(
+                chat_id=chat_id,
+                text=text,
+                reply_to_message_id=reply_to,
+                reply_markup=markup,
+            )
+            logger.info("telegram response delivered")
+            return
+
+        if response.kind == ResponseKind.ATTACHMENT:
+            if not response.attachments:
+                raise TelegramDeliveryError("attachment response requires attachments")
+            for attachment in response.attachments:
+                await _send_attachment(
+                    bot, chat_id, attachment, text, reply_to, generate_access, actor
+                )
+            logger.info("telegram response delivered")
+            return
+
         if text is None:
             raise TelegramDeliveryError(f"{response.kind.value} response requires text")
-        markup = _approval_markup(response.approval_actions)
-        await bot.send_message(
-            chat_id=chat_id,
-            text=text,
-            reply_to_message_id=reply_to,
-            reply_markup=markup,
-        )
-        return
 
-    if response.kind == ResponseKind.ATTACHMENT:
-        if not response.attachments:
-            raise TelegramDeliveryError("attachment response requires attachments")
+        await bot.send_message(chat_id=chat_id, text=text, reply_to_message_id=reply_to)
+
         for attachment in response.attachments:
-            await _send_attachment(bot, chat_id, attachment, text, reply_to, generate_access, actor)
-        return
+            await _send_attachment(bot, chat_id, attachment, None, reply_to, generate_access, actor)
 
-    if text is None:
-        raise TelegramDeliveryError(f"{response.kind.value} response requires text")
-
-    await bot.send_message(chat_id=chat_id, text=text, reply_to_message_id=reply_to)
-
-    for attachment in response.attachments:
-        await _send_attachment(bot, chat_id, attachment, None, reply_to, generate_access, actor)
+        logger.info("telegram response delivered")
+    except Exception as exc:
+        outcome = "error"
+        logger.exception("telegram delivery failed", extra={"error_category": type(exc).__name__})
+        raise
+    finally:
+        METRICS.provider_delivery.labels(provider="telegram", outcome=outcome).inc()
+        METRICS.provider_delivery_latency.labels(provider="telegram").observe(
+            time.perf_counter() - started
+        )

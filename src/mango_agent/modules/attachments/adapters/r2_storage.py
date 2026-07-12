@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import re
+import time
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import timedelta
@@ -20,6 +22,7 @@ from mango_agent.modules.attachments.ports.storage import (
 from mango_agent.shared.domain.errors import ValidationError
 from mango_agent.shared.domain.ids import AttachmentId
 from mango_agent.shared.domain.value_objects import Timestamp
+from mango_agent.shared.infrastructure.metrics import METRICS
 from mango_agent.shared.ports.actor_scope import ActorScope
 
 _ALLOWED_MIME_TYPES = frozenset({"image/jpeg", "image/png", "image/webp"})
@@ -28,6 +31,19 @@ _DEFAULT_REGION = "auto"
 _S3_SERVICE_NAME = "s3"
 _KEY_PREFIX = "attachments"
 _PATH_UNSAFE_PATTERN = re.compile(r"[^a-zA-Z0-9._-]")
+
+
+@asynccontextmanager
+async def _r2_metrics(operation: str) -> AsyncIterator[None]:
+    started = time.perf_counter()
+    try:
+        yield
+    except Exception:
+        METRICS.r2_errors.labels(operation=operation).inc()
+        raise
+    finally:
+        METRICS.r2_operations.labels(operation=operation).inc()
+        METRICS.r2_latency.labels(operation=operation).observe(time.perf_counter() - started)
 
 
 def _build_default_endpoint(account_id: str) -> str:
@@ -99,7 +115,7 @@ class R2AttachmentStorage(AttachmentStorage):
             request.original_filename,
         )
 
-        async with self._client() as client:
+        async with _r2_metrics("upload"), self._client() as client:
             await client.put_object(
                 Bucket=self._config.bucket,
                 Key=object_key,
@@ -114,7 +130,7 @@ class R2AttachmentStorage(AttachmentStorage):
         return object_key
 
     async def delete(self, object_key: str) -> None:
-        async with self._client() as client:
+        async with _r2_metrics("delete"), self._client() as client:
             try:
                 await client.delete_object(Bucket=self._config.bucket, Key=object_key)
             except ClientError as exc:
@@ -128,7 +144,7 @@ class R2AttachmentStorage(AttachmentStorage):
         actor_scope: ActorScope,
         ttl_seconds: int = DEFAULT_PRESIGNED_URL_TTL_SECONDS,
     ) -> PresignedUrl:
-        async with self._client() as client:
+        async with _r2_metrics("generate_presigned_url"), self._client() as client:
             url = client.generate_presigned_url(
                 "get_object",
                 Params={"Bucket": self._config.bucket, "Key": object_key},
@@ -139,7 +155,7 @@ class R2AttachmentStorage(AttachmentStorage):
         return PresignedUrl(url=url, expires_at=expires_at)
 
     async def retrieve(self, object_key: str) -> bytes:
-        async with self._client() as client:
+        async with _r2_metrics("retrieve"), self._client() as client:
             response = await client.get_object(Bucket=self._config.bucket, Key=object_key)
             async with response["Body"] as stream:
                 data: bytes = await stream.read()

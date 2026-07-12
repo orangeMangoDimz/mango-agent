@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import time
 
 import discord
 
@@ -13,6 +14,9 @@ from mango_agent.modules.identity.application.use_cases import (
 )
 from mango_agent.modules.identity.domain.provider import Provider
 from mango_agent.shared.domain.ids import OperationId, UserId
+from mango_agent.shared.infrastructure.correlation import correlation_id_scope
+from mango_agent.shared.infrastructure.logging import log_context, logger
+from mango_agent.shared.infrastructure.metrics import METRICS
 from mango_agent.shared.ports.actor_scope import ActorScope
 from mango_agent.shared.ports.idempotency import IdempotencyKey, IdempotencyRepository
 
@@ -72,23 +76,54 @@ class DiscordMessageProcessor:
         if message.author.bot:
             return
 
-        auth_context = await self._resolve_user(message.author)
-        actor = self._actor(auth_context)
-        event_key = IdempotencyKey.for_provider_event("discord", str(message.id))
-        operation_id = await self._claim_event(actor, event_key)
-        if operation_id is None:
-            return
+        with correlation_id_scope():
+            auth_context = await self._resolve_user(message.author)
+            actor = self._actor(auth_context)
+            event_key = IdempotencyKey.for_provider_event("discord", str(message.id))
+            operation_id = await self._claim_event(actor, event_key)
+            if operation_id is None:
+                METRICS.duplicate_events.labels(kind="provider_event").inc()
+                return
 
-        try:
-            normalized = build_normalized_message(self._bot_id, self._agent_command, message)
-            response = await self._agent.execute(auth_context, normalized)
-            await send_response(message.channel, response)
-        except Exception as exc:
-            with contextlib.suppress(Exception):
-                await message.channel.send(f"Sorry, I couldn't process that: {exc}")
-        finally:
-            with contextlib.suppress(Exception):
-                await self._idempotency_repo.record_operation(actor, event_key, operation_id)
+            with log_context(
+                channel="discord",
+                command=self._agent_command,
+                bot_instance=self._bot_id,
+                user_id=str(actor.user_id),
+                operation_id=str(operation_id),
+            ):
+                started = time.perf_counter()
+                outcome = "success"
+                try:
+                    logger.info("processing discord message")
+                    normalized = build_normalized_message(
+                        self._bot_id, self._agent_command, message
+                    )
+                    response = await self._agent.execute(auth_context, normalized)
+                    await send_response(message.channel, response)
+                    logger.info("discord message processed")
+                except Exception as exc:
+                    outcome = "error"
+                    logger.exception(
+                        "discord message failed",
+                        extra={"error_category": type(exc).__name__},
+                    )
+                    with contextlib.suppress(Exception):
+                        await message.channel.send(f"Sorry, I couldn't process that: {exc}")
+                finally:
+                    METRICS.messages.labels(
+                        channel="discord",
+                        command=self._agent_command,
+                        outcome=outcome,
+                    ).inc()
+                    METRICS.message_latency.labels(
+                        channel="discord",
+                        command=self._agent_command,
+                    ).observe(time.perf_counter() - started)
+                    with contextlib.suppress(Exception):
+                        await self._idempotency_repo.record_operation(
+                            actor, event_key, operation_id
+                        )
 
     async def _claim_event(self, actor: ActorScope, key: IdempotencyKey) -> OperationId | None:
         operation_id = OperationId.generate()

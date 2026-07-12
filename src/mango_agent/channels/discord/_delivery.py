@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 import discord
 
 from mango_agent.shared.channel_contracts import (
@@ -9,6 +11,8 @@ from mango_agent.shared.channel_contracts import (
     ResponseKind,
 )
 from mango_agent.shared.domain.errors import MangoError
+from mango_agent.shared.infrastructure.logging import logger
+from mango_agent.shared.infrastructure.metrics import METRICS
 
 
 class DiscordDeliveryError(MangoError):
@@ -33,12 +37,26 @@ async def send_response(
 ) -> None:
     """Render a normalized response as a Discord message."""
 
-    if response.kind in {ResponseKind.PROPOSAL, ResponseKind.CONFIRMATION}:
-        await channel.send(_approval_text(response))
-        return
+    started = time.perf_counter()
+    outcome = "success"
+    try:
+        if response.kind in {ResponseKind.PROPOSAL, ResponseKind.CONFIRMATION}:
+            await channel.send(_approval_text(response))
+            logger.info("discord response delivered")
+            return
 
-    text = response.text
-    if text is None:
-        raise DiscordDeliveryError(f"{response.kind.value} response requires text")
+        text = response.text
+        if text is None:
+            raise DiscordDeliveryError(f"{response.kind.value} response requires text")
 
-    await channel.send(text)
+        await channel.send(text)
+        logger.info("discord response delivered")
+    except Exception as exc:
+        outcome = "error"
+        logger.exception("discord delivery failed", extra={"error_category": type(exc).__name__})
+        raise
+    finally:
+        METRICS.provider_delivery.labels(provider="discord", outcome=outcome).inc()
+        METRICS.provider_delivery_latency.labels(provider="discord").observe(
+            time.perf_counter() - started
+        )

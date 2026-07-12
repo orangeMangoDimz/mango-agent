@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 
 from mango_agent.modules.attachments.domain import Attachment, AttachmentLifecycleStatus
 from mango_agent.shared.domain.ids import AttachmentId, TaskId
-from mango_agent.shared.domain.value_objects import PaginatedResult, Pagination
+from mango_agent.shared.domain.value_objects import PaginatedResult, Pagination, Timestamp
 from mango_agent.shared.ports.actor_scope import ActorScope
 
 __all__ = ["AttachmentRepository"]
@@ -57,3 +58,11 @@ class AttachmentRepository(ABC):
         new_status: AttachmentLifecycleStatus,
     ) -> Attachment:
         """Move the attachment to a new lifecycle status."""
+
+    @abstractmethod
+    async def list_cleanup_eligible(
+        self,
+        now: Timestamp,
+        batch_size: int,
+    ) -> Sequence[Attachment]:
+        """Return attachments that are eligible for cleanup."""
