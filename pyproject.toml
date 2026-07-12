@@ -4,7 +4,11 @@ version = "0.1.0"
 description = "Multi-user personal AI agent for managing projects and tasks via natural-language conversations."
 readme = "README.md"
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "pydantic",
+    "pydantic-settings",
+    "python-dotenv",
+]
 
 [project.scripts]
 mango-agent = "mango_agent.bootstrap:main"
