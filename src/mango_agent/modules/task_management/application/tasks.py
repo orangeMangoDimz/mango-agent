@@ -5,22 +5,22 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import final
 
-from mango_agent.modules.attachments.ports.repositories import AttachmentRepository
 from mango_agent.modules.conversation.domain import PendingConfirmation, PendingProposal
 from mango_agent.modules.conversation.ports.state_store import (
     ConfirmationStore,
     ConversationKey,
     ProposalStore,
 )
+from mango_agent.modules.identity.ports.repositories import UserRepository, UserSearchQuery
 from mango_agent.modules.task_management.domain import Priority, Status, Task
 from mango_agent.modules.task_management.domain.note import Note
 from mango_agent.modules.task_management.ports.repositories import (
     ProjectRepository,
-    TaskRepository,
     TaskSearchFilter,
 )
 from mango_agent.shared.domain.errors import (
     ConflictError,
+    MangoError,
     NotFoundError,
     UnauthorizedError,
     ValidationError,
@@ -33,10 +33,15 @@ from mango_agent.shared.domain.ids import (
     UserId,
 )
 from mango_agent.shared.domain.result import Result
-from mango_agent.shared.domain.value_objects import PaginatedResult, Pagination, Timestamp
+from mango_agent.shared.domain.value_objects import (
+    MAX_LIMIT,
+    PaginatedResult,
+    Pagination,
+    Timestamp,
+)
 from mango_agent.shared.ports.actor_scope import ActorScope
-from mango_agent.shared.ports.idempotency import IdempotencyKey, IdempotencyRepository
-from mango_agent.shared.ports.unit_of_work import UnitOfWork
+from mango_agent.shared.ports.idempotency import IdempotencyKey
+from mango_agent.shared.ports.unit_of_work import UnitOfWorkFactory
 
 
 @final
@@ -71,6 +76,20 @@ class UpdateTaskFields:
     confirmation_version: int | None = None
 
 
+async def _validate_assignee(
+    actor: ActorScope,
+    assigned_to_user_id: UserId | None,
+    users: UserRepository,
+) -> ValidationError | None:
+    """Return an error if the assignee is not the actor or a known user."""
+    if assigned_to_user_id is None or assigned_to_user_id == actor.user_id:
+        return None
+    result = await users.search(actor, UserSearchQuery(), Pagination(limit=MAX_LIMIT, offset=0))
+    if not any(user.id == assigned_to_user_id for user in result.items):
+        return ValidationError("assignee is not a known user")
+    return None
+
+
 @final
 class ValidateTaskProposal:
     """Validate a raw task proposal and detect missing project context."""
@@ -98,23 +117,22 @@ class ValidateTaskProposal:
 
 @final
 class CreateApprovedTask:
-    """Create a task after an independent proposal approval check."""
+    """Create a task after an independent proposal approval check.
+
+    The operation id is used as the idempotency key for the business operation.
+    The idempotency claim is first committed durably, then the task creation,
+    attachment linking, and result recording run in a separate transaction.
+    A repeated approval returns the previously created task; a transient failure
+    leaves the claim in place so the next attempt retries the business operation.
+    """
 
     def __init__(
         self,
-        task_repository: TaskRepository,
-        project_repository: ProjectRepository,
-        attachment_repository: AttachmentRepository,
-        idempotency_repository: IdempotencyRepository,
         proposal_store: ProposalStore,
-        unit_of_work: UnitOfWork,
+        uow_factory: UnitOfWorkFactory,
     ) -> None:
-        self._task_repository = task_repository
-        self._project_repository = project_repository
-        self._attachment_repository = attachment_repository
-        self._idempotency_repository = idempotency_repository
         self._proposal_store = proposal_store
-        self._unit_of_work = unit_of_work
+        self._uow_factory = uow_factory
 
     async def __call__(
         self,
@@ -130,28 +148,16 @@ class CreateApprovedTask:
         assigned_to_user_id: UserId | None,
         attachment_ids: tuple[AttachmentId, ...],
         idempotency_key: IdempotencyKey,
-    ) -> Result[Task, ConflictError | NotFoundError | ValidationError]:
+    ) -> Result[Task, MangoError]:
         proposal_result = await self._load_and_verify_proposal(
             conversation_key, operation_id, proposal_version
         )
         if proposal_result.is_failure:
             return Result.failure(proposal_result.error)
 
-        existing_task = await self._lookup_existing_task(actor, idempotency_key)
-        if existing_task is not None:
-            return Result.success(existing_task)
-
         proposal = proposal_result.value
-        if proposal.consumed:
-            return Result.failure(ConflictError("proposal already consumed"))
 
-        consumed = await self._proposal_store.consume(
-            conversation_key, operation_id, proposal.version
-        )
-        if not consumed:
-            return Result.failure(ConflictError("proposal could not be consumed"))
-
-        return await self._create_task_in_transaction(
+        result = await self._create_task_in_transaction(
             actor,
             idempotency_key,
             operation_id,
@@ -163,6 +169,20 @@ class CreateApprovedTask:
             assigned_to_user_id,
             attachment_ids,
         )
+        if result.is_failure:
+            return result
+
+        # After the durable transaction commits, consume the Redis proposal.
+        # If this fails, the task is already created; the next approval will
+        # return the existing task via idempotency.
+        consumed = await self._proposal_store.consume(
+            conversation_key, operation_id, proposal.version
+        )
+        if not consumed:
+            # Log warning but do not fail the already-persisted operation.
+            pass
+
+        return result
 
     async def _load_and_verify_proposal(
         self,
@@ -184,27 +204,6 @@ class CreateApprovedTask:
 
         return Result.success(proposal)
 
-    async def _lookup_existing_task(
-        self, actor: ActorScope, idempotency_key: IdempotencyKey
-    ) -> Task | None:
-        existing_operation_id = await self._idempotency_repository.claim_event(
-            actor, idempotency_key
-        )
-        if existing_operation_id is None:
-            return None
-
-        result_resource_id = await self._idempotency_repository.lookup_result(
-            actor, idempotency_key
-        )
-        if result_resource_id is None:
-            return None
-
-        try:
-            task_id = TaskId(value=result_resource_id.value)
-            return await self._task_repository.get(actor, task_id)
-        except (NotFoundError, ValidationError):
-            return None
-
     async def _create_task_in_transaction(
         self,
         actor: ActorScope,
@@ -217,11 +216,37 @@ class CreateApprovedTask:
         status: Status,
         assigned_to_user_id: UserId | None,
         attachment_ids: tuple[AttachmentId, ...],
-    ) -> Result[Task, ConflictError | NotFoundError | ValidationError]:
-        try:
-            await self._unit_of_work.begin()
+    ) -> Result[Task, MangoError]:
+        # Phase 1: durable idempotency claim in its own transaction so a retry
+        # after a transient business-operation failure can recover safely.
+        existing_task = await self._claim_or_lookup_task(actor, idempotency_key, operation_id)
+        if existing_task.is_failure:
+            return Result.failure(existing_task.error)
+        if existing_task.value is not None:
+            return Result.success(existing_task.value)
 
-            await self._project_repository.get(actor, project_id)
+        # Phase 2: create the task and record the result atomically.
+        uow = self._uow_factory()
+        try:
+            await uow.begin()
+
+            idempotency = uow.idempotency
+            projects = uow.projects
+            tasks = uow.tasks
+            attachments = uow.attachments
+            users = uow.users
+            assert idempotency is not None
+            assert projects is not None
+            assert tasks is not None
+            assert attachments is not None
+            assert users is not None
+
+            assignee_error = await _validate_assignee(actor, assigned_to_user_id, users)
+            if assignee_error is not None:
+                await uow.rollback()
+                return Result.failure(assignee_error)
+
+            await projects.get(actor, project_id)
 
             assigned_by = actor.user_id if assigned_to_user_id is not None else None
             task = Task.create(
@@ -233,24 +258,61 @@ class CreateApprovedTask:
                 assigned_by=assigned_by,
                 assigned_to=assigned_to_user_id,
             )
-            created = await self._task_repository.create(actor, task)
+            created = await tasks.create(actor, task)
 
             for attachment_id in attachment_ids:
-                await self._attachment_repository.link_to_task(
-                    actor, attachment_id, created.id
-                )
+                await attachments.link_to_task(actor, attachment_id, created.id)
 
-            await self._idempotency_repository.record_operation(
-                actor, idempotency_key, operation_id
-            )
-            await self._idempotency_repository.record_result(
-                actor, idempotency_key, created.id
-            )
+            await idempotency.record_operation(actor, idempotency_key, operation_id)
+            await idempotency.record_result(actor, idempotency_key, created.id)
 
-            await self._unit_of_work.commit()
+            await uow.commit()
             return Result.success(created)
-        except (NotFoundError, ValidationError, ConflictError) as exc:
-            await self._unit_of_work.rollback()
+        except MangoError as exc:
+            await uow.rollback()
+            return Result.failure(exc)
+
+    async def _claim_or_lookup_task(
+        self,
+        actor: ActorScope,
+        idempotency_key: IdempotencyKey,
+        operation_id: OperationId,
+    ) -> Result[Task | None, MangoError]:
+        """Claim the idempotency key durably and return any completed task.
+
+        Returns ``Result.success(None)`` when the key is newly claimed and the
+        caller must execute the business operation. Returns a task when the
+        operation was already completed. Failures roll back the claim
+        transaction.
+        """
+        uow = self._uow_factory()
+        try:
+            await uow.begin()
+            idempotency = uow.idempotency
+            assert idempotency is not None
+
+            existing = await idempotency.claim_event(actor, idempotency_key, operation_id)
+            if existing is not None:
+                result_resource_id = await idempotency.lookup_result(actor, idempotency_key)
+                await uow.commit()
+                if result_resource_id is None:
+                    return Result.success(None)
+                task_uow = self._uow_factory()
+                try:
+                    await task_uow.begin()
+                    tasks = task_uow.tasks
+                    assert tasks is not None
+                    task = await tasks.get(actor, TaskId(result_resource_id.value))
+                    await task_uow.commit()
+                    return Result.success(task)
+                except MangoError as exc:
+                    await task_uow.rollback()
+                    return Result.failure(exc)
+
+            await uow.commit()
+            return Result.success(None)
+        except MangoError as exc:
+            await uow.rollback()
             return Result.failure(exc)
 
 
@@ -258,35 +320,41 @@ class CreateApprovedTask:
 class GetTask:
     """Return a single task if the actor is authorized."""
 
-    def __init__(
-        self,
-        task_repository: TaskRepository,
-        project_repository: ProjectRepository,
-    ) -> None:
-        self._task_repository = task_repository
-        self._project_repository = project_repository
+    def __init__(self, uow_factory: UnitOfWorkFactory) -> None:
+        self._uow_factory = uow_factory
 
     async def __call__(
         self, actor: ActorScope, task_id: TaskId
     ) -> Result[Task, NotFoundError | UnauthorizedError]:
+        uow = self._uow_factory()
         try:
-            task = await self._task_repository.get(actor, task_id)
+            await uow.begin()
+            tasks = uow.tasks
+            projects = uow.projects
+            assert tasks is not None
+            assert projects is not None
+            task = await tasks.get(actor, task_id)
+            if not await self._is_authorized(actor, task, projects):
+                await uow.rollback()
+                return Result.failure(UnauthorizedError("not authorized to view task"))
+            await uow.commit()
+            return Result.success(task)
         except NotFoundError as exc:
+            await uow.rollback()
             return Result.failure(exc)
 
-        if not await self._is_authorized(actor, task):
-            return Result.failure(UnauthorizedError("not authorized to view task"))
-
-        return Result.success(task)
-
-    async def _is_authorized(self, actor: ActorScope, task: Task) -> bool:
+    async def _is_authorized(
+        self, actor: ActorScope, task: Task, project_repository: ProjectRepository
+    ) -> bool:
         if actor.user_id == task.assigned_by or actor.user_id == task.assigned_to:
             return True
-        return await self._is_project_owner(actor, task)
+        return await self._is_project_owner(actor, task, project_repository)
 
-    async def _is_project_owner(self, actor: ActorScope, task: Task) -> bool:
+    async def _is_project_owner(
+        self, actor: ActorScope, task: Task, project_repository: ProjectRepository
+    ) -> bool:
         try:
-            project = await self._project_repository.get(actor, task.project_id)
+            project = await project_repository.get(actor, task.project_id)
         except NotFoundError:
             return False
         return project.owner_user_id == actor.user_id
@@ -296,8 +364,8 @@ class GetTask:
 class SearchTasks:
     """Search tasks scoped to the actor."""
 
-    def __init__(self, task_repository: TaskRepository) -> None:
-        self._task_repository = task_repository
+    def __init__(self, uow_factory: UnitOfWorkFactory) -> None:
+        self._uow_factory = uow_factory
 
     async def __call__(
         self,
@@ -305,11 +373,17 @@ class SearchTasks:
         criteria: TaskSearchFilter,
         pagination: Pagination,
     ) -> Result[PaginatedResult[Task], NotFoundError]:
+        uow = self._uow_factory()
         try:
-            result = await self._task_repository.search(actor, criteria, pagination)
+            await uow.begin()
+            tasks = uow.tasks
+            assert tasks is not None
+            result = await tasks.search(actor, criteria, pagination)
+            await uow.commit()
+            return Result.success(result)
         except NotFoundError as exc:
+            await uow.rollback()
             return Result.failure(exc)
-        return Result.success(result)
 
 
 @final
@@ -318,12 +392,10 @@ class UpdateTask:
 
     def __init__(
         self,
-        task_repository: TaskRepository,
-        project_repository: ProjectRepository,
+        uow_factory: UnitOfWorkFactory,
         confirmation_store: ConfirmationStore,
     ) -> None:
-        self._task_repository = task_repository
-        self._project_repository = project_repository
+        self._uow_factory = uow_factory
         self._confirmation_store = confirmation_store
 
     async def __call__(
@@ -333,39 +405,57 @@ class UpdateTask:
         task_id: TaskId,
         fields: UpdateTaskFields,
     ) -> Result[Task, ConflictError | NotFoundError | UnauthorizedError | ValidationError]:
+        uow = self._uow_factory()
         try:
-            task = await self._task_repository.get(actor, task_id)
-        except NotFoundError as exc:
-            return Result.failure(exc)
+            await uow.begin()
+            tasks = uow.tasks
+            projects = uow.projects
+            assert tasks is not None
+            assert projects is not None
 
-        if not await self._is_authorized(actor, task):
-            return Result.failure(UnauthorizedError("not authorized to update task"))
+            task = await tasks.get(actor, task_id)
+            if not await self._is_authorized(actor, task, projects):
+                await uow.rollback()
+                return Result.failure(UnauthorizedError("not authorized to update task"))
 
-        if self._is_sensitive_update(fields):
-            confirmation_result = await self._consume_confirmation(
-                conversation_key, fields.confirmation_operation_id
-            )
-            if confirmation_result.is_failure:
-                return Result.failure(confirmation_result.error)
+            if fields.assigned_to is not None:
+                users = uow.users
+                assert users is not None
+                assignee_error = await _validate_assignee(actor, fields.assigned_to, users)
+                if assignee_error is not None:
+                    await uow.rollback()
+                    return Result.failure(assignee_error)
 
-        try:
+            if self._is_sensitive_update(fields):
+                confirmation_result = await self._consume_confirmation(
+                    conversation_key, fields.confirmation_operation_id
+                )
+                if confirmation_result.is_failure:
+                    await uow.rollback()
+                    return Result.failure(confirmation_result.error)
+
             updated = self._apply_fields(actor, task, fields)
             if fields.project_id is not None and fields.project_id != task.project_id:
-                await self._project_repository.get(actor, fields.project_id)
-            persisted = await self._task_repository.update(actor, updated)
+                await projects.get(actor, fields.project_id)
+            persisted = await tasks.update(actor, updated)
+            await uow.commit()
+            return Result.success(persisted)
         except (NotFoundError, ValidationError, ConflictError) as exc:
+            await uow.rollback()
             return Result.failure(exc)
 
-        return Result.success(persisted)
-
-    async def _is_authorized(self, actor: ActorScope, task: Task) -> bool:
+    async def _is_authorized(
+        self, actor: ActorScope, task: Task, project_repository: ProjectRepository
+    ) -> bool:
         if actor.user_id == task.assigned_by or actor.user_id == task.assigned_to:
             return True
-        return await self._is_project_owner(actor, task)
+        return await self._is_project_owner(actor, task, project_repository)
 
-    async def _is_project_owner(self, actor: ActorScope, task: Task) -> bool:
+    async def _is_project_owner(
+        self, actor: ActorScope, task: Task, project_repository: ProjectRepository
+    ) -> bool:
         try:
-            project = await self._project_repository.get(actor, task.project_id)
+            project = await project_repository.get(actor, task.project_id)
         except NotFoundError:
             return False
         return project.owner_user_id == actor.user_id
@@ -409,9 +499,7 @@ class UpdateTask:
 
         return Result.success(confirmation)
 
-    def _apply_fields(
-        self, actor: ActorScope, task: Task, fields: UpdateTaskFields
-    ) -> Task:
+    def _apply_fields(self, actor: ActorScope, task: Task, fields: UpdateTaskFields) -> Task:
         updated = task
         if fields.title is not None:
             updated = updated.rename(fields.title)
@@ -442,41 +530,45 @@ class UpdateTask:
 class TransitionTaskStatus:
     """Transition a task status while preserving the done_at invariant."""
 
-    def __init__(
-        self,
-        task_repository: TaskRepository,
-        project_repository: ProjectRepository,
-    ) -> None:
-        self._task_repository = task_repository
-        self._project_repository = project_repository
+    def __init__(self, uow_factory: UnitOfWorkFactory) -> None:
+        self._uow_factory = uow_factory
 
     async def __call__(
         self, actor: ActorScope, task_id: TaskId, new_status: Status
     ) -> Result[Task, NotFoundError | UnauthorizedError | ValidationError]:
+        uow = self._uow_factory()
         try:
-            task = await self._task_repository.get(actor, task_id)
-        except NotFoundError as exc:
-            return Result.failure(exc)
+            await uow.begin()
+            tasks = uow.tasks
+            projects = uow.projects
+            assert tasks is not None
+            assert projects is not None
 
-        if not await self._is_authorized(actor, task):
-            return Result.failure(UnauthorizedError("not authorized to transition task"))
+            task = await tasks.get(actor, task_id)
+            if not await self._is_authorized(actor, task, projects):
+                await uow.rollback()
+                return Result.failure(UnauthorizedError("not authorized to transition task"))
 
-        try:
             updated = task.set_status(new_status)
-            persisted = await self._task_repository.update(actor, updated)
+            persisted = await tasks.update(actor, updated)
+            await uow.commit()
+            return Result.success(persisted)
         except (ValidationError, NotFoundError) as exc:
+            await uow.rollback()
             return Result.failure(exc)
 
-        return Result.success(persisted)
-
-    async def _is_authorized(self, actor: ActorScope, task: Task) -> bool:
+    async def _is_authorized(
+        self, actor: ActorScope, task: Task, project_repository: ProjectRepository
+    ) -> bool:
         if actor.user_id == task.assigned_by or actor.user_id == task.assigned_to:
             return True
-        return await self._is_project_owner(actor, task)
+        return await self._is_project_owner(actor, task, project_repository)
 
-    async def _is_project_owner(self, actor: ActorScope, task: Task) -> bool:
+    async def _is_project_owner(
+        self, actor: ActorScope, task: Task, project_repository: ProjectRepository
+    ) -> bool:
         try:
-            project = await self._project_repository.get(actor, task.project_id)
+            project = await project_repository.get(actor, task.project_id)
         except NotFoundError:
             return False
         return project.owner_user_id == actor.user_id
@@ -488,15 +580,11 @@ class DeleteTask:
 
     def __init__(
         self,
-        task_repository: TaskRepository,
-        project_repository: ProjectRepository,
         confirmation_store: ConfirmationStore,
-        unit_of_work: UnitOfWork,
+        uow_factory: UnitOfWorkFactory,
     ) -> None:
-        self._task_repository = task_repository
-        self._project_repository = project_repository
         self._confirmation_store = confirmation_store
-        self._unit_of_work = unit_of_work
+        self._uow_factory = uow_factory
 
     async def __call__(
         self,
@@ -508,41 +596,24 @@ class DeleteTask:
         if confirmation_operation_id is None:
             return Result.failure(ConflictError("confirmation required to delete task"))
 
-        try:
-            task = await self._task_repository.get(actor, task_id)
-        except NotFoundError as exc:
-            return Result.failure(exc)
-
-        if not await self._is_authorized(actor, task):
-            return Result.failure(UnauthorizedError("not authorized to delete task"))
-
         confirmation_result = await self._consume_confirmation(
             conversation_key, confirmation_operation_id
         )
         if confirmation_result.is_failure:
             return Result.failure(confirmation_result.error)
 
+        uow = self._uow_factory()
         try:
-            await self._unit_of_work.begin()
-            await self._task_repository.delete(actor, task_id)
-            await self._unit_of_work.commit()
+            await uow.begin()
+            tasks = uow.tasks
+            assert tasks is not None
+            await tasks.delete(actor, task_id)
+            await uow.commit()
         except (NotFoundError, ValidationError, ConflictError) as exc:
-            await self._unit_of_work.rollback()
+            await uow.rollback()
             return Result.failure(exc)
 
         return Result.success(None)
-
-    async def _is_authorized(self, actor: ActorScope, task: Task) -> bool:
-        if actor.user_id == task.assigned_by or actor.user_id == task.assigned_to:
-            return True
-        return await self._is_project_owner(actor, task)
-
-    async def _is_project_owner(self, actor: ActorScope, task: Task) -> bool:
-        try:
-            project = await self._project_repository.get(actor, task.project_id)
-        except NotFoundError:
-            return False
-        return project.owner_user_id == actor.user_id
 
     async def _consume_confirmation(
         self,

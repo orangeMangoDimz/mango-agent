@@ -12,7 +12,7 @@ from mango_agent.modules.identity.application.use_cases import (
     ResolveProviderIdentity,
 )
 from mango_agent.modules.identity.domain.provider import Provider
-from mango_agent.shared.domain.ids import UserId
+from mango_agent.shared.domain.ids import OperationId, UserId
 from mango_agent.shared.ports.actor_scope import ActorScope
 from mango_agent.shared.ports.idempotency import IdempotencyKey, IdempotencyRepository
 
@@ -72,18 +72,27 @@ class DiscordMessageProcessor:
         if message.author.bot:
             return
 
+        auth_context = await self._resolve_user(message.author)
+        actor = self._actor(auth_context)
+        event_key = IdempotencyKey.for_provider_event("discord", str(message.id))
+        operation_id = await self._claim_event(actor, event_key)
+        if operation_id is None:
+            return
+
         try:
-            auth_context = await self._resolve_user(message.author)
-            actor = self._actor(auth_context)
-
-            key = IdempotencyKey.for_provider_event("discord", str(message.id))
-            existing = await self._idempotency_repo.claim_event(actor, key)
-            if existing is not None:
-                return
-
             normalized = build_normalized_message(self._bot_id, self._agent_command, message)
             response = await self._agent.execute(auth_context, normalized)
             await send_response(message.channel, response)
         except Exception as exc:
             with contextlib.suppress(Exception):
                 await message.channel.send(f"Sorry, I couldn't process that: {exc}")
+        finally:
+            with contextlib.suppress(Exception):
+                await self._idempotency_repo.record_operation(actor, event_key, operation_id)
+
+    async def _claim_event(self, actor: ActorScope, key: IdempotencyKey) -> OperationId | None:
+        operation_id = OperationId.generate()
+        existing = await self._idempotency_repo.claim_event(actor, key, operation_id)
+        if existing is not None:
+            return None
+        return operation_id

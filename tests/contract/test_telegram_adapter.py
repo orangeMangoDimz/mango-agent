@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime
 from types import SimpleNamespace
 from typing import Any, final
@@ -139,9 +140,14 @@ class FakeIdempotencyRepository(IdempotencyRepository):
     def __init__(self) -> None:
         self._keys: set[IdempotencyKey] = set()
 
-    async def claim_event(self, actor: ActorScope, key: IdempotencyKey) -> Any:
+    async def claim_event(
+        self,
+        actor: ActorScope,
+        key: IdempotencyKey,
+        operation_id: OperationId,
+    ) -> OperationId | None:
         if key in self._keys:
-            return key
+            return operation_id
         self._keys.add(key)
         return None
 
@@ -175,6 +181,11 @@ def bot() -> FakeBot:
 @pytest.fixture
 def uow() -> FakeIdentityUnitOfWork:
     return FakeIdentityUnitOfWork()
+
+
+@pytest.fixture
+def uow_factory(uow: FakeIdentityUnitOfWork) -> Callable[[], FakeIdentityUnitOfWork]:
+    return lambda: uow
 
 
 @pytest.fixture
@@ -229,7 +240,7 @@ def _make_photo_update(caption: str | None = None, update_id: int = 2) -> Update
 
 def _make_processor(
     agent: FakeAgent,
-    uow: FakeIdentityUnitOfWork,
+    uow_factory: Callable[[], FakeIdentityUnitOfWork],
     register_upload: FakeRegisterPendingUpload,
     generate_access: FakeGenerateAccess,
     idempotency_repo: FakeIdempotencyRepository,
@@ -238,7 +249,7 @@ def _make_processor(
         bot_id="task-bot",
         agent_command="task_management",
         agent=agent,
-        resolve_identity=ResolveProviderIdentity(uow),
+        resolve_identity=ResolveProviderIdentity(uow_factory=uow_factory),
         register_upload=register_upload,
         generate_access=generate_access,
         idempotency_repo=idempotency_repo,
@@ -248,12 +259,14 @@ def _make_processor(
 async def test_telegram_processor_routes_text_message_to_agent(
     agent: FakeAgent,
     bot: FakeBot,
-    uow: FakeIdentityUnitOfWork,
+    uow_factory: Callable[[], FakeIdentityUnitOfWork],
     register_upload: FakeRegisterPendingUpload,
     generate_access: FakeGenerateAccess,
     idempotency_repo: FakeIdempotencyRepository,
 ) -> None:
-    processor = _make_processor(agent, uow, register_upload, generate_access, idempotency_repo)
+    processor = _make_processor(
+        agent, uow_factory, register_upload, generate_access, idempotency_repo
+    )
     update = _make_text_update("create a task")
     context = SimpleNamespace(bot=bot)
 
@@ -273,12 +286,14 @@ async def test_telegram_processor_routes_text_message_to_agent(
 async def test_telegram_processor_uploads_photo_and_routes_caption_to_agent(
     agent: FakeAgent,
     bot: FakeBot,
-    uow: FakeIdentityUnitOfWork,
+    uow_factory: Callable[[], FakeIdentityUnitOfWork],
     register_upload: FakeRegisterPendingUpload,
     generate_access: FakeGenerateAccess,
     idempotency_repo: FakeIdempotencyRepository,
 ) -> None:
-    processor = _make_processor(agent, uow, register_upload, generate_access, idempotency_repo)
+    processor = _make_processor(
+        agent, uow_factory, register_upload, generate_access, idempotency_repo
+    )
     update = _make_photo_update(caption="from this image", update_id=3)
     context = SimpleNamespace(bot=bot)
 
@@ -293,12 +308,14 @@ async def test_telegram_processor_uploads_photo_and_routes_caption_to_agent(
 async def test_telegram_processor_skips_duplicate_updates(
     agent: FakeAgent,
     bot: FakeBot,
-    uow: FakeIdentityUnitOfWork,
+    uow_factory: Callable[[], FakeIdentityUnitOfWork],
     register_upload: FakeRegisterPendingUpload,
     generate_access: FakeGenerateAccess,
     idempotency_repo: FakeIdempotencyRepository,
 ) -> None:
-    processor = _make_processor(agent, uow, register_upload, generate_access, idempotency_repo)
+    processor = _make_processor(
+        agent, uow_factory, register_upload, generate_access, idempotency_repo
+    )
     context = SimpleNamespace(bot=bot)
 
     await processor.process_message(_make_text_update("first", update_id=10), context)

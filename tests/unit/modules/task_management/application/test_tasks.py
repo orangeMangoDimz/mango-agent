@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import typing
 from datetime import timedelta
 
 import pytest
@@ -9,6 +10,7 @@ import pytest
 from mango_agent.modules.conversation.domain import PendingConfirmation, PendingProposal
 from mango_agent.modules.conversation.ports.state_store import ConversationKey
 from mango_agent.modules.identity.domain.provider import Provider
+from mango_agent.modules.identity.domain.user import User
 from mango_agent.modules.task_management.application.tasks import (
     CreateApprovedTask,
     DeleteTask,
@@ -22,7 +24,12 @@ from mango_agent.modules.task_management.application.tasks import (
 from mango_agent.modules.task_management.domain import Priority, Status, Task
 from mango_agent.modules.task_management.domain.note import Note
 from mango_agent.modules.task_management.ports.repositories import TaskSearchFilter
-from mango_agent.shared.domain.errors import ConflictError, NotFoundError
+from mango_agent.shared.domain.errors import (
+    ConflictError,
+    InternalError,
+    NotFoundError,
+    ValidationError,
+)
 from mango_agent.shared.domain.ids import OperationId, ProjectId, UserId
 from mango_agent.shared.domain.value_objects import Pagination, Timestamp
 from mango_agent.shared.ports.actor_scope import ActorScope
@@ -107,8 +114,25 @@ def confirmation_store() -> FakeConfirmationStore:
 
 
 @pytest.fixture
-def unit_of_work() -> FakeUnitOfWork:
-    return FakeUnitOfWork()
+def unit_of_work(
+    project_repository: FakeProjectRepository,
+    task_repository: FakeTaskRepository,
+    attachment_repository: FakeAttachmentRepository,
+    idempotency_repository: FakeIdempotencyRepository,
+) -> FakeUnitOfWork:
+    return FakeUnitOfWork(
+        project_repository=project_repository,
+        task_repository=task_repository,
+        attachment_repository=attachment_repository,
+        idempotency_repository=idempotency_repository,
+    )
+
+
+@pytest.fixture
+def uow_factory(
+    unit_of_work: FakeUnitOfWork,
+) -> typing.Callable[[], FakeUnitOfWork]:
+    return lambda: unit_of_work
 
 
 async def _create_project(
@@ -190,21 +214,16 @@ async def test_create_approved_task_with_idempotency(
     idempotency_repository: FakeIdempotencyRepository,
     proposal_store: FakeProposalStore,
     unit_of_work: FakeUnitOfWork,
+    uow_factory: typing.Callable[[], FakeUnitOfWork],
 ) -> None:
     project_id = await _create_project(actor, project_repository)
     operation_id = OperationId.generate()
-    idempotency_key = IdempotencyKey(
-        scope="approved_task", external_id=str(operation_id)
-    )
+    idempotency_key = IdempotencyKey(scope="approved_task", external_id=str(operation_id))
     proposal = await _seed_proposal(proposal_store, conversation_key, operation_id)
 
     use_case = CreateApprovedTask(
-        task_repository=task_repository,
-        project_repository=project_repository,
-        attachment_repository=attachment_repository,
-        idempotency_repository=idempotency_repository,
         proposal_store=proposal_store,
-        unit_of_work=unit_of_work,
+        uow_factory=uow_factory,
     )
 
     first = await use_case(
@@ -244,6 +263,146 @@ async def test_create_approved_task_with_idempotency(
     assert second.value.id == created.id
 
 
+async def test_create_approved_task_retries_after_transient_failure(
+    actor: ActorScope,
+    conversation_key: ConversationKey,
+    project_repository: FakeProjectRepository,
+    task_repository: FakeTaskRepository,
+    attachment_repository: FakeAttachmentRepository,
+    idempotency_repository: FakeIdempotencyRepository,
+    proposal_store: FakeProposalStore,
+    unit_of_work: FakeUnitOfWork,
+    uow_factory: typing.Callable[[], FakeUnitOfWork],
+) -> None:
+    project_id = await _create_project(actor, project_repository)
+    operation_id = OperationId.generate()
+    idempotency_key = IdempotencyKey(scope="approved_task", external_id=str(operation_id))
+    proposal = await _seed_proposal(proposal_store, conversation_key, operation_id)
+    task_repository.fail_next_create()
+
+    use_case = CreateApprovedTask(
+        proposal_store=proposal_store,
+        uow_factory=uow_factory,
+    )
+
+    first = await use_case(
+        actor=actor,
+        conversation_key=conversation_key,
+        operation_id=operation_id,
+        proposal_version=proposal.version,
+        title="Buy mangoes",
+        description="",
+        project_id=project_id,
+        priority=Priority.MEDIUM,
+        status=Status.TODO,
+        assigned_to_user_id=None,
+        attachment_ids=(),
+        idempotency_key=idempotency_key,
+    )
+    assert first.is_failure
+    assert isinstance(first.error, InternalError)
+    assert await idempotency_repository.lookup_operation(actor, idempotency_key) is not None
+
+    second = await use_case(
+        actor=actor,
+        conversation_key=conversation_key,
+        operation_id=operation_id,
+        proposal_version=proposal.version,
+        title="Buy mangoes",
+        description="",
+        project_id=project_id,
+        priority=Priority.MEDIUM,
+        status=Status.TODO,
+        assigned_to_user_id=None,
+        attachment_ids=(),
+        idempotency_key=idempotency_key,
+    )
+    assert second.is_success
+    assert second.value.title == "Buy mangoes"
+    assert unit_of_work.committed
+
+
+async def test_create_approved_task_assigns_to_known_user(
+    actor: ActorScope,
+    conversation_key: ConversationKey,
+    project_repository: FakeProjectRepository,
+    task_repository: FakeTaskRepository,
+    attachment_repository: FakeAttachmentRepository,
+    idempotency_repository: FakeIdempotencyRepository,
+    proposal_store: FakeProposalStore,
+    unit_of_work: FakeUnitOfWork,
+    uow_factory: typing.Callable[[], FakeUnitOfWork],
+) -> None:
+    project_id = await _create_project(actor, project_repository)
+    operation_id = OperationId.generate()
+    idempotency_key = IdempotencyKey(scope="approved_task", external_id=str(operation_id))
+    proposal = await _seed_proposal(proposal_store, conversation_key, operation_id)
+    other_user = User.create("Bob")
+    await unit_of_work.users.create(actor, other_user)
+
+    use_case = CreateApprovedTask(
+        proposal_store=proposal_store,
+        uow_factory=uow_factory,
+    )
+
+    result = await use_case(
+        actor=actor,
+        conversation_key=conversation_key,
+        operation_id=operation_id,
+        proposal_version=proposal.version,
+        title="Buy mangoes",
+        description="",
+        project_id=project_id,
+        priority=Priority.MEDIUM,
+        status=Status.TODO,
+        assigned_to_user_id=other_user.id,
+        attachment_ids=(),
+        idempotency_key=idempotency_key,
+    )
+    assert result.is_success
+    assert result.value.assigned_to == other_user.id
+
+
+async def test_create_approved_task_rejects_unknown_assignee(
+    actor: ActorScope,
+    conversation_key: ConversationKey,
+    project_repository: FakeProjectRepository,
+    task_repository: FakeTaskRepository,
+    attachment_repository: FakeAttachmentRepository,
+    idempotency_repository: FakeIdempotencyRepository,
+    proposal_store: FakeProposalStore,
+    unit_of_work: FakeUnitOfWork,
+    uow_factory: typing.Callable[[], FakeUnitOfWork],
+) -> None:
+    project_id = await _create_project(actor, project_repository)
+    operation_id = OperationId.generate()
+    idempotency_key = IdempotencyKey(scope="approved_task", external_id=str(operation_id))
+    proposal = await _seed_proposal(proposal_store, conversation_key, operation_id)
+    unknown_user = User.create("Eve")
+
+    use_case = CreateApprovedTask(
+        proposal_store=proposal_store,
+        uow_factory=uow_factory,
+    )
+
+    result = await use_case(
+        actor=actor,
+        conversation_key=conversation_key,
+        operation_id=operation_id,
+        proposal_version=proposal.version,
+        title="Buy mangoes",
+        description="",
+        project_id=project_id,
+        priority=Priority.MEDIUM,
+        status=Status.TODO,
+        assigned_to_user_id=unknown_user.id,
+        attachment_ids=(),
+        idempotency_key=idempotency_key,
+    )
+    assert result.is_failure
+    assert isinstance(result.error, ValidationError)
+
+
 async def test_create_approved_task_with_unapproved_proposal_fails(
     actor: ActorScope,
     conversation_key: ConversationKey,
@@ -253,20 +412,15 @@ async def test_create_approved_task_with_unapproved_proposal_fails(
     idempotency_repository: FakeIdempotencyRepository,
     proposal_store: FakeProposalStore,
     unit_of_work: FakeUnitOfWork,
+    uow_factory: typing.Callable[[], FakeUnitOfWork],
 ) -> None:
     project_id = await _create_project(actor, project_repository)
     operation_id = OperationId.generate()
-    idempotency_key = IdempotencyKey(
-        scope="approved_task", external_id=str(operation_id)
-    )
+    idempotency_key = IdempotencyKey(scope="approved_task", external_id=str(operation_id))
 
     use_case = CreateApprovedTask(
-        task_repository=task_repository,
-        project_repository=project_repository,
-        attachment_repository=attachment_repository,
-        idempotency_repository=idempotency_repository,
         proposal_store=proposal_store,
-        unit_of_work=unit_of_work,
+        uow_factory=uow_factory,
     )
 
     result = await use_case(
@@ -292,12 +446,13 @@ async def test_get_and_search_tasks_scoped_to_actor(
     other_actor: ActorScope,
     project_repository: FakeProjectRepository,
     task_repository: FakeTaskRepository,
+    uow_factory: typing.Callable[[], FakeUnitOfWork],
 ) -> None:
     project_id = await _create_project(actor, project_repository)
     task = await _create_task(actor, task_repository, project_id)
 
-    get_use_case = GetTask(task_repository=task_repository, project_repository=project_repository)
-    search_use_case = SearchTasks(task_repository=task_repository)
+    get_use_case = GetTask(uow_factory=uow_factory)
+    search_use_case = SearchTasks(uow_factory=uow_factory)
 
     get_result = await get_use_case(actor, task.id)
     assert get_result.is_success
@@ -326,13 +481,13 @@ async def test_update_safe_fields_vs_sensitive_update(
     project_repository: FakeProjectRepository,
     task_repository: FakeTaskRepository,
     confirmation_store: FakeConfirmationStore,
+    uow_factory: typing.Callable[[], FakeUnitOfWork],
 ) -> None:
     project_id = await _create_project(actor, project_repository)
     task = await _create_task(actor, task_repository, project_id)
 
     use_case = UpdateTask(
-        task_repository=task_repository,
-        project_repository=project_repository,
+        uow_factory=uow_factory,
         confirmation_store=confirmation_store,
     )
 
@@ -380,17 +535,97 @@ async def test_update_safe_fields_vs_sensitive_update(
     assert sensitive_with_confirmation.value.title == "Buy ripe mangoes"
 
 
+async def test_update_task_assigns_to_known_user(
+    actor: ActorScope,
+    conversation_key: ConversationKey,
+    project_repository: FakeProjectRepository,
+    task_repository: FakeTaskRepository,
+    confirmation_store: FakeConfirmationStore,
+    unit_of_work: FakeUnitOfWork,
+    uow_factory: typing.Callable[[], FakeUnitOfWork],
+) -> None:
+    project_id = await _create_project(actor, project_repository)
+    task = await _create_task(actor, task_repository, project_id)
+    other_user = User.create("Bob")
+    await unit_of_work.users.create(actor, other_user)
+    confirmation_id = OperationId.generate()
+    await _seed_confirmation(
+        confirmation_store,
+        conversation_key,
+        confirmation_id,
+        operation_type="task_sensitive_update",
+        target_ref=str(task.id),
+    )
+
+    use_case = UpdateTask(
+        uow_factory=uow_factory,
+        confirmation_store=confirmation_store,
+    )
+
+    result = await use_case(
+        actor=actor,
+        conversation_key=conversation_key,
+        task_id=task.id,
+        fields=UpdateTaskFields(
+            assigned_to=other_user.id,
+            confirmation_operation_id=confirmation_id,
+            confirmation_version=1,
+        ),
+    )
+    assert result.is_success
+    assert result.value.assigned_to == other_user.id
+
+
+async def test_update_task_rejects_unknown_assignee(
+    actor: ActorScope,
+    conversation_key: ConversationKey,
+    project_repository: FakeProjectRepository,
+    task_repository: FakeTaskRepository,
+    confirmation_store: FakeConfirmationStore,
+    unit_of_work: FakeUnitOfWork,
+    uow_factory: typing.Callable[[], FakeUnitOfWork],
+) -> None:
+    project_id = await _create_project(actor, project_repository)
+    task = await _create_task(actor, task_repository, project_id)
+    unknown_user = User.create("Eve")
+    confirmation_id = OperationId.generate()
+    await _seed_confirmation(
+        confirmation_store,
+        conversation_key,
+        confirmation_id,
+        operation_type="task_sensitive_update",
+        target_ref=str(task.id),
+    )
+
+    use_case = UpdateTask(
+        uow_factory=uow_factory,
+        confirmation_store=confirmation_store,
+    )
+
+    result = await use_case(
+        actor=actor,
+        conversation_key=conversation_key,
+        task_id=task.id,
+        fields=UpdateTaskFields(
+            assigned_to=unknown_user.id,
+            confirmation_operation_id=confirmation_id,
+            confirmation_version=1,
+        ),
+    )
+    assert result.is_failure
+    assert isinstance(result.error, ValidationError)
+
+
 async def test_transition_status_maintains_done_at(
     actor: ActorScope,
     project_repository: FakeProjectRepository,
     task_repository: FakeTaskRepository,
+    uow_factory: typing.Callable[[], FakeUnitOfWork],
 ) -> None:
     project_id = await _create_project(actor, project_repository)
     task = await _create_task(actor, task_repository, project_id)
 
-    use_case = TransitionTaskStatus(
-        task_repository=task_repository, project_repository=project_repository
-    )
+    use_case = TransitionTaskStatus(uow_factory=uow_factory)
 
     done_result = await use_case(actor, task.id, Status.DONE)
     assert done_result.is_success
@@ -410,15 +645,14 @@ async def test_delete_task_requires_confirmation(
     task_repository: FakeTaskRepository,
     confirmation_store: FakeConfirmationStore,
     unit_of_work: FakeUnitOfWork,
+    uow_factory: typing.Callable[[], FakeUnitOfWork],
 ) -> None:
     project_id = await _create_project(actor, project_repository)
     task = await _create_task(actor, task_repository, project_id)
 
     use_case = DeleteTask(
-        task_repository=task_repository,
-        project_repository=project_repository,
+        uow_factory=uow_factory,
         confirmation_store=confirmation_store,
-        unit_of_work=unit_of_work,
     )
 
     without_confirmation = await use_case(
@@ -444,9 +678,7 @@ async def test_delete_task_requires_confirmation(
     assert delete_result.is_success
     assert unit_of_work.committed
 
-    get_use_case = GetTask(
-        task_repository=task_repository, project_repository=project_repository
-    )
+    get_use_case = GetTask(uow_factory=uow_factory)
     after_delete = await get_use_case(actor, task.id)
     assert after_delete.is_failure
     assert isinstance(after_delete.error, NotFoundError)
@@ -459,27 +691,22 @@ async def test_cross_user_rejection(
     project_repository: FakeProjectRepository,
     task_repository: FakeTaskRepository,
     confirmation_store: FakeConfirmationStore,
-    unit_of_work: FakeUnitOfWork,
+    uow_factory: typing.Callable[[], FakeUnitOfWork],
 ) -> None:
     project_id = await _create_project(actor, project_repository)
     task = await _create_task(actor, task_repository, project_id)
 
-    get_use_case = GetTask(task_repository=task_repository, project_repository=project_repository)
+    get_use_case = GetTask(uow_factory=uow_factory)
     update_use_case = UpdateTask(
-        task_repository=task_repository,
-        project_repository=project_repository,
+        uow_factory=uow_factory,
         confirmation_store=confirmation_store,
     )
-    transition_use_case = TransitionTaskStatus(
-        task_repository=task_repository, project_repository=project_repository
-    )
+    transition_use_case = TransitionTaskStatus(uow_factory=uow_factory)
     delete_use_case = DeleteTask(
-        task_repository=task_repository,
-        project_repository=project_repository,
+        uow_factory=uow_factory,
         confirmation_store=confirmation_store,
-        unit_of_work=unit_of_work,
     )
-    search_use_case = SearchTasks(task_repository=task_repository)
+    search_use_case = SearchTasks(uow_factory=uow_factory)
 
     assert (await get_use_case(other_actor, task.id)).is_failure
     assert (
@@ -491,9 +718,7 @@ async def test_cross_user_rejection(
         )
     ).is_failure
     assert (await transition_use_case(other_actor, task.id, Status.IN_PROGRESS)).is_failure
-    assert (
-        await delete_use_case(other_actor, conversation_key, task.id)
-    ).is_failure
+    assert (await delete_use_case(other_actor, conversation_key, task.id)).is_failure
     search_result = await search_use_case(
         other_actor, TaskSearchFilter(project_id=project_id), Pagination.default()
     )

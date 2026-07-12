@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import typing
+
 import pytest
 
 from mango_agent.modules.attachments.application.use_cases import (
@@ -31,6 +33,7 @@ from tests.unit.modules.attachments.fakes import (
     FakeAttachmentRepository,
     FakeAttachmentStorage,
     FakeTaskRepository,
+    FakeUnitOfWork,
 )
 
 
@@ -54,6 +57,17 @@ def attachment_repo(task_repo: FakeTaskRepository) -> FakeAttachmentRepository:
     return FakeAttachmentRepository(task_repo=task_repo)
 
 
+@pytest.fixture
+def uow_factory(
+    attachment_repo: FakeAttachmentRepository,
+    task_repo: FakeTaskRepository,
+) -> typing.Callable[[], FakeUnitOfWork]:
+    return lambda: FakeUnitOfWork(
+        attachment_repository=attachment_repo,
+        task_repository=task_repo,
+    )
+
+
 def _sample_request(actor: ActorScope) -> UploadRequest:
     return UploadRequest(
         content=b"image-content",
@@ -66,9 +80,9 @@ def _sample_request(actor: ActorScope) -> UploadRequest:
 async def _uploaded_attachment(
     actor: ActorScope,
     storage: FakeAttachmentStorage,
-    repo: FakeAttachmentRepository,
+    uow_factory: typing.Callable[[], FakeUnitOfWork],
 ) -> Attachment:
-    use_case = RegisterPendingUpload(repo, storage)
+    use_case = RegisterPendingUpload(uow_factory=uow_factory, storage=storage)
     result = await use_case(actor, _sample_request(actor))
     assert result.is_success
     return result.value
@@ -77,15 +91,15 @@ async def _uploaded_attachment(
 async def _attached_attachment(
     actor: ActorScope,
     storage: FakeAttachmentStorage,
-    repo: FakeAttachmentRepository,
+    uow_factory: typing.Callable[[], FakeUnitOfWork],
     task_repo: FakeTaskRepository,
 ) -> tuple[Attachment, Task]:
     project = Project.create(owner_user_id=actor.user_id, title="Test Project")
     task_repo.add_project(project)
     task = Task.create(project_id=project.id, title="Test Task")
     task_repo.add_task(task)
-    attachment = await _uploaded_attachment(actor, storage, repo)
-    linker = LinkAttachmentToTask(repo, task_repo)
+    attachment = await _uploaded_attachment(actor, storage, uow_factory)
+    linker = LinkAttachmentToTask(uow_factory=uow_factory)
     result = await linker(actor, attachment.id, task.id)
     assert result.is_success
     return result.value, task
@@ -95,8 +109,9 @@ async def test_register_pending_upload(
     actor: ActorScope,
     storage: FakeAttachmentStorage,
     attachment_repo: FakeAttachmentRepository,
+    uow_factory: typing.Callable[[], FakeUnitOfWork],
 ) -> None:
-    use_case = RegisterPendingUpload(attachment_repo, storage)
+    use_case = RegisterPendingUpload(uow_factory=uow_factory, storage=storage)
     result = await use_case(actor, _sample_request(actor))
 
     assert result.is_success
@@ -112,9 +127,10 @@ async def test_register_pending_upload_rejects_actor_mismatch(
     actor: ActorScope,
     storage: FakeAttachmentStorage,
     attachment_repo: FakeAttachmentRepository,
+    uow_factory: typing.Callable[[], FakeUnitOfWork],
 ) -> None:
     other_actor = ActorScope(user_id=UserId.generate(), bot_id="test-bot", command="test")
-    use_case = RegisterPendingUpload(attachment_repo, storage)
+    use_case = RegisterPendingUpload(uow_factory=uow_factory, storage=storage)
     result = await use_case(other_actor, _sample_request(actor))
 
     assert result.is_failure
@@ -126,6 +142,7 @@ async def test_register_pending_upload_rejects_unsupported_mime_type(
     actor: ActorScope,
     storage: FakeAttachmentStorage,
     attachment_repo: FakeAttachmentRepository,
+    uow_factory: typing.Callable[[], FakeUnitOfWork],
 ) -> None:
     request = UploadRequest(
         content=b"content",
@@ -133,7 +150,7 @@ async def test_register_pending_upload_rejects_unsupported_mime_type(
         mime_type="text/plain",
         uploader_user_id=actor.user_id,
     )
-    use_case = RegisterPendingUpload(attachment_repo, storage)
+    use_case = RegisterPendingUpload(uow_factory=uow_factory, storage=storage)
     result = await use_case(actor, request)
 
     assert result.is_failure
@@ -145,9 +162,10 @@ async def test_compensation_on_persistence_failure(
     actor: ActorScope,
     storage: FakeAttachmentStorage,
     attachment_repo: FakeAttachmentRepository,
+    uow_factory: typing.Callable[[], FakeUnitOfWork],
 ) -> None:
     attachment_repo.fail_next_register_pending()
-    use_case = RegisterPendingUpload(attachment_repo, storage)
+    use_case = RegisterPendingUpload(uow_factory=uow_factory, storage=storage)
     result = await use_case(actor, _sample_request(actor))
 
     assert result.is_failure
@@ -161,14 +179,15 @@ async def test_link_attachment_to_task(
     storage: FakeAttachmentStorage,
     attachment_repo: FakeAttachmentRepository,
     task_repo: FakeTaskRepository,
+    uow_factory: typing.Callable[[], FakeUnitOfWork],
 ) -> None:
     project = Project.create(owner_user_id=actor.user_id, title="Test Project")
     task_repo.add_project(project)
     task = Task.create(project_id=project.id, title="Test Task")
     task_repo.add_task(task)
-    attachment = await _uploaded_attachment(actor, storage, attachment_repo)
+    attachment = await _uploaded_attachment(actor, storage, uow_factory)
 
-    use_case = LinkAttachmentToTask(attachment_repo, task_repo)
+    use_case = LinkAttachmentToTask(uow_factory=uow_factory)
     result = await use_case(actor, attachment.id, task.id)
 
     assert result.is_success
@@ -184,14 +203,15 @@ async def test_link_attachment_to_task_rejects_unauthorized_task(
     storage: FakeAttachmentStorage,
     attachment_repo: FakeAttachmentRepository,
     task_repo: FakeTaskRepository,
+    uow_factory: typing.Callable[[], FakeUnitOfWork],
 ) -> None:
     project = Project.create(owner_user_id=UserId.generate(), title="Other Project")
     task_repo.add_project(project)
     task = Task.create(project_id=project.id, title="Other Task")
     task_repo.add_task(task)
-    attachment = await _uploaded_attachment(actor, storage, attachment_repo)
+    attachment = await _uploaded_attachment(actor, storage, uow_factory)
 
-    use_case = LinkAttachmentToTask(attachment_repo, task_repo)
+    use_case = LinkAttachmentToTask(uow_factory=uow_factory)
     result = await use_case(actor, attachment.id, task.id)
 
     assert result.is_failure
@@ -202,9 +222,10 @@ async def test_authorize_retrieval_for_owner(
     actor: ActorScope,
     storage: FakeAttachmentStorage,
     attachment_repo: FakeAttachmentRepository,
+    uow_factory: typing.Callable[[], FakeUnitOfWork],
 ) -> None:
-    attachment = await _uploaded_attachment(actor, storage, attachment_repo)
-    use_case = AuthorizeRetrieval(attachment_repo)
+    attachment = await _uploaded_attachment(actor, storage, uow_factory)
+    use_case = AuthorizeRetrieval(uow_factory=uow_factory)
 
     result = await use_case(actor, attachment.id)
 
@@ -216,10 +237,11 @@ async def test_authorize_retrieval_cross_user_rejection(
     actor: ActorScope,
     storage: FakeAttachmentStorage,
     attachment_repo: FakeAttachmentRepository,
+    uow_factory: typing.Callable[[], FakeUnitOfWork],
 ) -> None:
-    attachment = await _uploaded_attachment(actor, storage, attachment_repo)
+    attachment = await _uploaded_attachment(actor, storage, uow_factory)
     other_actor = ActorScope(user_id=UserId.generate(), bot_id="test-bot", command="test")
-    use_case = AuthorizeRetrieval(attachment_repo)
+    use_case = AuthorizeRetrieval(uow_factory=uow_factory)
 
     result = await use_case(other_actor, attachment.id)
 
@@ -231,9 +253,10 @@ async def test_generate_access_produces_presigned_url(
     actor: ActorScope,
     storage: FakeAttachmentStorage,
     attachment_repo: FakeAttachmentRepository,
+    uow_factory: typing.Callable[[], FakeUnitOfWork],
 ) -> None:
-    attachment = await _uploaded_attachment(actor, storage, attachment_repo)
-    use_case = GenerateAccess(attachment_repo, storage)
+    attachment = await _uploaded_attachment(actor, storage, uow_factory)
+    use_case = GenerateAccess(uow_factory=uow_factory, storage=storage)
 
     result = await use_case(actor, attachment.id, ttl_seconds=120)
 
@@ -250,10 +273,11 @@ async def test_generate_access_rejects_unauthorized_actor(
     actor: ActorScope,
     storage: FakeAttachmentStorage,
     attachment_repo: FakeAttachmentRepository,
+    uow_factory: typing.Callable[[], FakeUnitOfWork],
 ) -> None:
-    attachment = await _uploaded_attachment(actor, storage, attachment_repo)
+    attachment = await _uploaded_attachment(actor, storage, uow_factory)
     other_actor = ActorScope(user_id=UserId.generate(), bot_id="test-bot", command="test")
-    use_case = GenerateAccess(attachment_repo, storage)
+    use_case = GenerateAccess(uow_factory=uow_factory, storage=storage)
 
     result = await use_case(other_actor, attachment.id)
 
@@ -266,11 +290,10 @@ async def test_reject_or_expire_attachment_triggers_cleanup(
     storage: FakeAttachmentStorage,
     attachment_repo: FakeAttachmentRepository,
     task_repo: FakeTaskRepository,
+    uow_factory: typing.Callable[[], FakeUnitOfWork],
 ) -> None:
-    attachment, _ = await _attached_attachment(
-        actor, storage, attachment_repo, task_repo
-    )
-    use_case = RejectOrExpireAttachment(attachment_repo, storage)
+    attachment, _ = await _attached_attachment(actor, storage, uow_factory, task_repo)
+    use_case = RejectOrExpireAttachment(uow_factory=uow_factory, storage=storage)
 
     result = await use_case(actor, attachment.id)
 
@@ -284,9 +307,10 @@ async def test_reject_or_expire_uploaded_attachment_marks_rejected(
     actor: ActorScope,
     storage: FakeAttachmentStorage,
     attachment_repo: FakeAttachmentRepository,
+    uow_factory: typing.Callable[[], FakeUnitOfWork],
 ) -> None:
-    attachment = await _uploaded_attachment(actor, storage, attachment_repo)
-    use_case = RejectOrExpireAttachment(attachment_repo, storage)
+    attachment = await _uploaded_attachment(actor, storage, uow_factory)
+    use_case = RejectOrExpireAttachment(uow_factory=uow_factory, storage=storage)
 
     result = await use_case(actor, attachment.id)
 
@@ -299,15 +323,16 @@ async def test_reject_or_expire_rejects_deleted_attachment(
     actor: ActorScope,
     storage: FakeAttachmentStorage,
     attachment_repo: FakeAttachmentRepository,
+    uow_factory: typing.Callable[[], FakeUnitOfWork],
 ) -> None:
-    attachment = await _uploaded_attachment(actor, storage, attachment_repo)
+    attachment = await _uploaded_attachment(actor, storage, uow_factory)
     rejected = await attachment_repo.mark_lifecycle(
         actor, attachment.id, AttachmentLifecycleStatus.REJECTED
     )
     deleted = await attachment_repo.mark_lifecycle(
         actor, rejected.id, AttachmentLifecycleStatus.DELETED
     )
-    use_case = RejectOrExpireAttachment(attachment_repo, storage)
+    use_case = RejectOrExpireAttachment(uow_factory=uow_factory, storage=storage)
 
     result = await use_case(actor, deleted.id)
 

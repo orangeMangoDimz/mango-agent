@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, final
 
@@ -20,6 +21,7 @@ from mango_agent.shared.channel_contracts import (
     NormalizedInboundMessage,
     NormalizedOutboundResponse,
 )
+from mango_agent.shared.domain.ids import OperationId
 from mango_agent.shared.ports.actor_scope import ActorScope
 from mango_agent.shared.ports.idempotency import IdempotencyKey, IdempotencyRepository
 
@@ -43,9 +45,14 @@ class FakeIdempotencyRepository(IdempotencyRepository):
     def __init__(self) -> None:
         self._keys: set[IdempotencyKey] = set()
 
-    async def claim_event(self, actor: ActorScope, key: IdempotencyKey) -> Any:
+    async def claim_event(
+        self,
+        actor: ActorScope,
+        key: IdempotencyKey,
+        operation_id: OperationId,
+    ) -> OperationId | None:
         if key in self._keys:
-            return key
+            return operation_id
         self._keys.add(key)
         return None
 
@@ -109,30 +116,35 @@ def uow() -> FakeIdentityUnitOfWork:
 
 
 @pytest.fixture
+def uow_factory(uow: FakeIdentityUnitOfWork) -> Callable[[], FakeIdentityUnitOfWork]:
+    return lambda: uow
+
+
+@pytest.fixture
 def idempotency_repo() -> FakeIdempotencyRepository:
     return FakeIdempotencyRepository()
 
 
 def _make_processor(
     agent: FakeAgent,
-    uow: FakeIdentityUnitOfWork,
+    uow_factory: Callable[[], FakeIdentityUnitOfWork],
     idempotency_repo: FakeIdempotencyRepository,
 ) -> DiscordMessageProcessor:
     return DiscordMessageProcessor(
         bot_id="discord-bot",
         agent_command="task_management",
         agent=agent,
-        resolve_identity=ResolveProviderIdentity(uow),
+        resolve_identity=ResolveProviderIdentity(uow_factory=uow_factory),
         idempotency_repo=idempotency_repo,
     )
 
 
 async def test_discord_processor_routes_text_message_to_agent(
     agent: FakeAgent,
-    uow: FakeIdentityUnitOfWork,
+    uow_factory: Callable[[], FakeIdentityUnitOfWork],
     idempotency_repo: FakeIdempotencyRepository,
 ) -> None:
-    processor = _make_processor(agent, uow, idempotency_repo)
+    processor = _make_processor(agent, uow_factory, idempotency_repo)
     message = FakeDiscordMessage(id=101, content="show my tasks")
 
     await processor.process_message(message)
@@ -167,10 +179,10 @@ async def test_discord_normalization_preserves_thread_and_reply_reference() -> N
 
 async def test_discord_processor_ignores_bot_messages(
     agent: FakeAgent,
-    uow: FakeIdentityUnitOfWork,
+    uow_factory: Callable[[], FakeIdentityUnitOfWork],
     idempotency_repo: FakeIdempotencyRepository,
 ) -> None:
-    processor = _make_processor(agent, uow, idempotency_repo)
+    processor = _make_processor(agent, uow_factory, idempotency_repo)
     message = FakeDiscordMessage(author=FakeDiscordAuthor(bot=True))
 
     await processor.process_message(message)

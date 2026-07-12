@@ -43,8 +43,13 @@ class IdempotencyRepository(ABC):
         self,
         actor: ActorScope,
         key: IdempotencyKey,
+        operation_id: OperationId,
     ) -> OperationId | None:
-        """Claim an event key; return an existing operation id if already processed."""
+        """Claim an event key using the provided operation id.
+
+        Returns ``None`` when the key is newly claimed, or the existing operation
+        id when the key has already been processed.
+        """
 
     @abstractmethod
     async def record_operation(

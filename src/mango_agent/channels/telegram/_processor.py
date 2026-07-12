@@ -18,7 +18,7 @@ from mango_agent.modules.identity.application.use_cases import (
     ResolveProviderIdentity,
 )
 from mango_agent.modules.identity.domain.provider import Provider
-from mango_agent.shared.domain.ids import UserId
+from mango_agent.shared.domain.ids import OperationId, UserId
 from mango_agent.shared.ports.actor_scope import ActorScope
 from mango_agent.shared.ports.idempotency import IdempotencyKey, IdempotencyRepository
 
@@ -80,10 +80,15 @@ class TelegramMessageProcessor:
             command=context.command,
         )
 
-    async def _claim_event(self, actor: ActorScope, provider_event_id: str) -> bool:
-        key = IdempotencyKey.for_provider_event("telegram", provider_event_id)
-        existing = await self._idempotency_repo.claim_event(actor, key)
-        return existing is None
+    def _event_key(self, provider_event_id: str) -> IdempotencyKey:
+        return IdempotencyKey.for_provider_event("telegram", provider_event_id)
+
+    async def _claim_event(self, actor: ActorScope, key: IdempotencyKey) -> OperationId | None:
+        operation_id = OperationId.generate()
+        existing = await self._idempotency_repo.claim_event(actor, key, operation_id)
+        if existing is not None:
+            return None
+        return operation_id
 
     async def process_message(self, update: Update, context: Any) -> None:
         """Handle an incoming text or photo message."""
@@ -92,13 +97,14 @@ class TelegramMessageProcessor:
         if message is None or message.from_user is None or message.chat is None:
             return
 
+        auth_context = await self._resolve_user(message.from_user)
+        actor = self._actor(auth_context)
+        event_key = self._event_key(str(update.update_id))
+        operation_id = await self._claim_event(actor, event_key)
+        if operation_id is None:
+            return
+
         try:
-            auth_context = await self._resolve_user(message.from_user)
-            actor = self._actor(auth_context)
-
-            if not await self._claim_event(actor, str(update.update_id)):
-                return
-
             attachments = await upload_message_attachments(
                 context.bot, self._register_upload, actor, message
             )
@@ -115,6 +121,9 @@ class TelegramMessageProcessor:
             )
         except Exception as exc:
             await self._send_error(context.bot, message.chat.id, exc)
+        finally:
+            with contextlib.suppress(Exception):
+                await self._idempotency_repo.record_operation(actor, event_key, operation_id)
 
     async def process_callback(self, update: Update, context: Any) -> None:
         """Handle an inline-keyboard approval action."""
@@ -128,14 +137,15 @@ class TelegramMessageProcessor:
         ):
             return
 
+        auth_context = await self._resolve_user(query.from_user)
+        actor = self._actor(auth_context)
+        event_key = self._event_key(str(update.update_id))
+        operation_id = await self._claim_event(actor, event_key)
+        if operation_id is None:
+            await query.answer()
+            return
+
         try:
-            auth_context = await self._resolve_user(query.from_user)
-            actor = self._actor(auth_context)
-
-            if not await self._claim_event(actor, str(update.update_id)):
-                await query.answer()
-                return
-
             data = query.data
             if data is None:
                 raise TelegramProcessorError("callback query has no data")
@@ -144,9 +154,9 @@ class TelegramMessageProcessor:
             if len(parts) != 2:
                 raise TelegramProcessorError("invalid callback data")
 
-            kind, operation_id = parts
+            kind, callback_operation_id = parts
             normalized = build_normalized_callback(
-                self._bot_id, self._agent_command, update, kind, operation_id
+                self._bot_id, self._agent_command, update, kind, callback_operation_id
             )
             response = await self._agent.execute(auth_context, normalized)
             await send_response(
@@ -161,6 +171,9 @@ class TelegramMessageProcessor:
             await self._send_error(context.bot, query.message.chat.id, exc)
             with contextlib.suppress(Exception):
                 await query.answer()
+        finally:
+            with contextlib.suppress(Exception):
+                await self._idempotency_repo.record_operation(actor, event_key, operation_id)
 
     async def _send_error(self, bot: telegram.Bot, chat_id: int | None, exc: Exception) -> None:
         if chat_id is None:

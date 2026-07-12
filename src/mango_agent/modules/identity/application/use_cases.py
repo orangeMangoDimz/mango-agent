@@ -26,6 +26,7 @@ from mango_agent.shared.domain.value_objects import (
     Pagination,
 )
 from mango_agent.shared.ports.actor_scope import ActorScope
+from mango_agent.shared.ports.unit_of_work import UnitOfWorkFactory
 
 __all__ = [
     "AuthenticatedContext",
@@ -58,6 +59,14 @@ class IdentityUnitOfWork(Protocol):
     async def rollback(self) -> None: ...
 
 
+def _as_identity_uow(uow: UnitOfWorkFactory) -> IdentityUnitOfWork:
+    """Return a unit of work exposing identity repositories."""
+    created = uow()
+    if not hasattr(created, "users") or not hasattr(created, "provider_identities"):
+        raise TypeError("unit of work does not expose identity repositories")
+    return created
+
+
 class ResolveProviderIdentity:
     """Resolve a provider-authenticated identity to an internal user.
 
@@ -68,8 +77,8 @@ class ResolveProviderIdentity:
     is not treated as the authoritative internal user id.
     """
 
-    def __init__(self, uow: IdentityUnitOfWork) -> None:
-        self._uow = uow
+    def __init__(self, uow_factory: UnitOfWorkFactory) -> None:
+        self._uow_factory = uow_factory
 
     async def __call__(
         self,
@@ -79,19 +88,20 @@ class ResolveProviderIdentity:
         username: str | None,
         display_name: str,
     ) -> Result[AuthenticatedContext, MangoError]:
+        uow = _as_identity_uow(self._uow_factory)
         try:
-            await self._uow.begin()
+            await uow.begin()
             try:
-                identity = await self._uow.provider_identities.get_by_natural_key(
+                identity = await uow.provider_identities.get_by_natural_key(
                     actor, provider, provider_user_id
                 )
             except NotFoundError:
                 user = User.create(display_name.strip())
                 identity = ProviderIdentity.create(user.id, provider, provider_user_id, username)
-                await self._uow.users.create(actor, user)
-                await self._uow.provider_identities.create(actor, identity)
+                await uow.users.create(actor, user)
+                await uow.provider_identities.create(actor, identity)
             else:
-                user = await self._uow.users.get_by_id(
+                user = await uow.users.get_by_id(
                     ActorScope(
                         user_id=identity.user_id,
                         bot_id=actor.bot_id,
@@ -99,7 +109,7 @@ class ResolveProviderIdentity:
                     ),
                     identity.user_id,
                 )
-            await self._uow.commit()
+            await uow.commit()
             return Result.success(
                 AuthenticatedContext(
                     internal_user_id=user.id,
@@ -110,39 +120,46 @@ class ResolveProviderIdentity:
                 )
             )
         except MangoError as exc:
-            await self._uow.rollback()
+            await uow.rollback()
             return Result.failure(exc)
         except Exception as exc:
-            await self._uow.rollback()
+            await uow.rollback()
             return Result.failure(InternalError(str(exc)))
 
 
 class GetUser:
     """Load a user by id. Actor may read themselves or any known user."""
 
-    def __init__(self, uow: IdentityUnitOfWork) -> None:
-        self._uow = uow
+    def __init__(self, uow_factory: UnitOfWorkFactory) -> None:
+        self._uow_factory = uow_factory
 
     async def __call__(self, actor: ActorScope, user_id: UserId) -> Result[User, MangoError]:
+        uow = _as_identity_uow(self._uow_factory)
         try:
-            result = await self._uow.users.search(
+            await uow.begin()
+            # Actor may read themselves or any known user.
+            result = await uow.users.search(
                 actor, UserSearchQuery(), Pagination(limit=MAX_LIMIT, offset=0)
             )
             user = next((u for u in result.items if u.id == user_id), None)
             if user is None:
+                await uow.rollback()
                 return Result.failure(NotFoundError(f"user {user_id} not found"))
+            await uow.commit()
             return Result.success(user)
         except MangoError as exc:
+            await uow.rollback()
             return Result.failure(exc)
         except Exception as exc:
+            await uow.rollback()
             return Result.failure(InternalError(str(exc)))
 
 
 class SearchKnownUsers:
     """Search users by display name substring or list all known users."""
 
-    def __init__(self, uow: IdentityUnitOfWork) -> None:
-        self._uow = uow
+    def __init__(self, uow_factory: UnitOfWorkFactory) -> None:
+        self._uow_factory = uow_factory
 
     async def __call__(
         self,
@@ -150,14 +167,19 @@ class SearchKnownUsers:
         display_name_contains: str | None = None,
         pagination: Pagination | None = None,
     ) -> Result[PaginatedResult[User], MangoError]:
+        uow = _as_identity_uow(self._uow_factory)
         try:
-            result = await self._uow.users.search(
+            await uow.begin()
+            result = await uow.users.search(
                 actor,
                 UserSearchQuery(display_name_contains=display_name_contains),
                 pagination or Pagination.default(),
             )
+            await uow.commit()
             return Result.success(result)
         except MangoError as exc:
+            await uow.rollback()
             return Result.failure(exc)
         except Exception as exc:
+            await uow.rollback()
             return Result.failure(InternalError(str(exc)))

@@ -9,12 +9,14 @@ from mango_agent.modules.task_management.ports.repositories import (
     TaskRepository,
     TaskSearchFilter,
 )
-from mango_agent.shared.domain.errors import ConflictError, NotFoundError
+from mango_agent.shared.domain.errors import ConflictError, InternalError, NotFoundError
 from mango_agent.shared.domain.ids import EntityId, OperationId, ProjectId, TaskId
 from mango_agent.shared.domain.value_objects import PaginatedResult, Pagination
 from mango_agent.shared.ports.actor_scope import ActorScope
 from mango_agent.shared.ports.idempotency import IdempotencyKey, IdempotencyRepository
 from mango_agent.shared.ports.unit_of_work import UnitOfWork
+from tests.unit.modules.attachments.fakes import FakeAttachmentRepository
+from tests.unit.modules.identity.fakes import FakeUserRepository
 
 
 class FakeProjectRepository(ProjectRepository):
@@ -79,8 +81,15 @@ class FakeTaskRepository(TaskRepository):
         self._deleted: set[TaskId] = set()
         self._operation_tasks: dict[OperationId, TaskId] = {}
         self._project_repository = project_repository
+        self._fail_next_create = False
+
+    def fail_next_create(self) -> None:
+        self._fail_next_create = True
 
     async def create(self, actor: ActorScope, task: Task) -> Task:
+        if self._fail_next_create:
+            self._fail_next_create = False
+            raise InternalError("simulated transient create failure")
         if task.id in self._tasks:
             raise ConflictError("task id already exists")
         self._tasks[task.id] = task
@@ -173,8 +182,12 @@ class FakeIdempotencyRepository(IdempotencyRepository):
         self,
         actor: ActorScope,
         key: IdempotencyKey,
+        operation_id: OperationId,
     ) -> OperationId | None:
-        return self._operations.get(key)
+        if key in self._operations:
+            return self._operations[key]
+        self._operations[key] = operation_id
+        return None
 
     async def record_operation(
         self,
@@ -208,7 +221,19 @@ class FakeIdempotencyRepository(IdempotencyRepository):
 
 
 class FakeUnitOfWork(UnitOfWork):
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        project_repository: FakeProjectRepository | None = None,
+        task_repository: FakeTaskRepository | None = None,
+        attachment_repository: FakeAttachmentRepository | None = None,
+        idempotency_repository: FakeIdempotencyRepository | None = None,
+        user_repository: FakeUserRepository | None = None,
+    ) -> None:
+        self.projects = project_repository or FakeProjectRepository()
+        self.tasks = task_repository or FakeTaskRepository(self.projects)
+        self.attachments = attachment_repository or FakeAttachmentRepository()
+        self.idempotency = idempotency_repository or FakeIdempotencyRepository()
+        self.users = user_repository or FakeUserRepository()
         self.begun = False
         self.committed = False
         self.rolled_back = False
