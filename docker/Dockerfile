@@ -17,6 +17,7 @@ COPY pyproject.toml uv.lock ./
 RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-dev --no-install-project
 
 # Copy application source and install the project (creates the mango-agent script).
+COPY README.md ./
 COPY src/ src/
 RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-dev
 
