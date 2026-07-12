@@ -1,0 +1,71 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-mango}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mango}
+      POSTGRES_DB: ${POSTGRES_DB:-mango}
+    ports:
+      - "5432:5432"
+    volumes:
+      - mango_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  mango-task-telegram:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    environment:
+      CHANNEL: ${CHANNEL:-}
+      BOT_INSTANCE: ${BOT_INSTANCE:-}
+      AGENT_COMMAND: ${AGENT_COMMAND:-}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://mango:mango@postgres:5432/mango}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      # External managed services - wired in tasks 03/19/20.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-}
+      R2_ACCOUNT_ID: ${R2_ACCOUNT_ID:-}
+      R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:-}
+      R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:-}
+      R2_BUCKET: ${R2_BUCKET:-}
+      LANGSMITH_API_KEY: ${LANGSMITH_API_KEY:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  mango-migrate:
+    # Placeholder one-shot migration service. The real migration command and
+    # schema arrive in task 15. Run via: docker compose --profile migrate run --rm mango-migrate
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    command: ["mango-agent", "migrate"]
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://mango:mango@postgres:5432/mango}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    profiles: ["migrate"]
+    restart: "no"
+
+volumes:
+  mango_pgdata:

@@ -6,6 +6,9 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = []
 
+[project.scripts]
+mango-agent = "mango_agent.bootstrap:main"
+
 [dependency-groups]
 dev = [
     "ruff",
