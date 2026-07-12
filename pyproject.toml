@@ -5,11 +5,15 @@ description = "Multi-user personal AI agent for managing projects and tasks via 
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "aiobotocore>=3.7.0",
     "alembic>=1.18.5",
+    "anthropic>=0.116.0",
     "asyncpg>=0.31.0",
+    "langsmith>=0.10.2",
     "pydantic",
     "pydantic-settings",
     "python-dotenv",
+    "redis>=8.0.1",
 ]
 
 [project.scripts]
@@ -56,6 +60,22 @@ files = ["src/mango_agent"]
 module = ["asyncpg", "asyncpg.*"]
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+module = ["redis", "redis.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["aiobotocore", "aiobotocore.*", "botocore", "botocore.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["anthropic", "anthropic.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["langsmith", "langsmith.*"]
+ignore_missing_imports = true
+
 [tool.importlinter]
 root_packages = ["mango_agent"]
 include_external_packages = true
@@ -81,7 +101,7 @@ layers = [
 ]
 
 # Inner layers must not import infrastructure SDKs nor outer packages.
-# Enforces: Channels → Agents → Application → Domain/Ports ← Adapters.
+# Enforces: Channels -> Agents -> Application -> Domain/Ports <- Adapters.
 [[tool.importlinter.contracts]]
 name = "Inner layers isolated from infrastructure"
 type = "forbidden"
