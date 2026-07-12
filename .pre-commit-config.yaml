@@ -1,0 +1,33 @@
+# Run via: uv run pre-commit run --all-files
+# Hooks use the project's own dev-group tools (language: system), so versions
+# stay in sync with uv.lock — no pinned revs to drift.
+minimum_pre_commit_version: "3.0.0"
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check
+        entry: ruff check
+        language: system
+        types: [python]
+        pass_filenames: true
+      - id: ruff-format
+        name: ruff format
+        entry: ruff format
+        language: system
+        types: [python]
+        pass_filenames: true
+      - id: mypy
+        name: mypy (strict)
+        entry: mypy
+        language: system
+        types: [python]
+        files: ^src/mango_agent/
+        pass_filenames: false
+      - id: import-linter
+        name: import-linter (hexagonal contracts)
+        entry: lint-imports
+        language: system
+        types: [python]
+        pass_filenames: false
+        always_run: true

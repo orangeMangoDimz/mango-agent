@@ -1,7 +1,98 @@
 [project]
 name = "mango-agent"
 version = "0.1.0"
-description = "Add your description here"
+description = "Multi-user personal AI agent for managing projects and tasks via natural-language conversations."
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = []
+
+[dependency-groups]
+dev = [
+    "ruff",
+    "pytest",
+    "pytest-asyncio",
+    "mypy",
+    "import-linter",
+    "pre-commit",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mango_agent"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["mango_agent"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-ra"
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+files = ["src/mango_agent"]
+
+[tool.importlinter]
+root_packages = ["mango_agent"]
+include_external_packages = true
+
+# Hexagonal ordering inside each business module:
+#   adapters | application   (independent siblings, neither imports the other)
+#   ports
+#   domain
+# Higher layers may import lower layers; lower layers may not import higher.
+[[tool.importlinter.contracts]]
+name = "Hexagonal module layers"
+type = "layers"
+containers = [
+    "mango_agent.modules.identity",
+    "mango_agent.modules.task_management",
+    "mango_agent.modules.attachments",
+    "mango_agent.modules.conversation",
+]
+layers = [
+    "adapters | application",
+    "ports",
+    "domain",
+]
+
+# Inner layers must not import infrastructure SDKs nor outer packages.
+# Enforces: Channels → Agents → Application → Domain/Ports ← Adapters.
+[[tool.importlinter.contracts]]
+name = "Inner layers isolated from infrastructure"
+type = "forbidden"
+source_modules = [
+    "mango_agent.modules.*.domain",
+    "mango_agent.modules.*.application",
+    "mango_agent.modules.*.ports",
+    "mango_agent.shared.domain",
+]
+forbidden_modules = [
+    "mango_agent.bootstrap",
+    "mango_agent.channels",
+    "mango_agent.agents",
+    "mango_agent.integrations",
+    "mango_agent.modules.*.adapters",
+    "telegram",
+    "discord",
+    "asyncpg",
+    "psycopg",
+    "redis",
+    "boto3",
+    "aiobotocore",
+    "anthropic",
+    "langchain",
+    "langgraph",
+    "langsmith",
+]
