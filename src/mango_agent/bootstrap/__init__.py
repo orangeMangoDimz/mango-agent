@@ -1,21 +1,15 @@
 """Application composition root entry point.
 
-Minimal fail-fast stub for task 02 (Docker Compose local dev). The full typed
-configuration object and concrete adapter wiring arrive in tasks 03
-(configuration) and 33 (composition root).
+Loads and validates configuration at startup (task 03). Concrete adapter
+wiring and the Telegram polling loop arrive in tasks 31 and 33.
 """
 
 from __future__ import annotations
 
-import os
 import sys
 from collections.abc import Sequence
 
-REQUIRED_VARS = ("CHANNEL", "BOT_INSTANCE", "AGENT_COMMAND", "DATABASE_URL", "REDIS_URL")
-
-
-def _resolved_config() -> dict[str, str]:
-    return {name: os.environ.get(name, "") for name in REQUIRED_VARS}
+from mango_agent.shared.infrastructure.config import ConfigError, load_config
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -25,20 +19,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("migrate: not implemented yet (see task 15)")
         return 0
 
-    config = _resolved_config()
-    missing = [name for name, value in config.items() if not value]
-    if missing:
-        print(
-            "mango-agent: refusing to start - missing required env: " + ", ".join(missing),
-            file=sys.stderr,
-        )
+    try:
+        config = load_config()
+    except ConfigError as exc:
+        print(f"mango-agent: {exc}", file=sys.stderr)
         return 1
 
     print(
         "mango-app starting: "
-        f"instance={config['BOT_INSTANCE']} "
-        f"channel={config['CHANNEL']} "
-        f"agent_command={config['AGENT_COMMAND']}"
+        f"instance={config.instance.bot_instance} "
+        f"channel={config.channel.channel} "
+        f"agent_command={config.instance.agent_command} "
+        f"env={config.logging.env}"
     )
     print("(no polling loop yet - task 31)")
     return 0
