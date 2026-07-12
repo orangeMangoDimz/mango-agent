@@ -35,6 +35,7 @@ WORKDIR /app
 COPY --from=builder --chown=mango:mango /app/.venv /app/.venv
 COPY --from=builder --chown=mango:mango /app/src /app/src
 COPY --from=builder --chown=mango:mango /app/pyproject.toml /app/pyproject.toml
+COPY --chown=mango:mango alembic.ini migrations ./
 
 USER mango
 CMD ["mango-agent"]
