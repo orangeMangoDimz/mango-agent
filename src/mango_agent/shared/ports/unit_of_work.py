@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Callable
-from typing import Any, final
+from types import TracebackType
+from typing import Any, Self, final
 
 __all__ = ["UnitOfWork", "UnitOfWorkFactory"]
 
@@ -22,6 +23,7 @@ class UnitOfWork(ABC):
     projects: Any = None
     tasks: Any = None
     attachments: Any = None
+    attachment_events: Any = None
     idempotency: Any = None
 
     @abstractmethod
@@ -35,6 +37,19 @@ class UnitOfWork(ABC):
     @abstractmethod
     async def rollback(self) -> None:
         """Rollback the transaction."""
+
+    @abstractmethod
+    async def __aenter__(self) -> Self:
+        """Enter the transaction context."""
+
+    @abstractmethod
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        """Exit the transaction context."""
 
 
 type UnitOfWorkFactory = Callable[[], UnitOfWork]

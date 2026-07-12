@@ -24,6 +24,7 @@ from mango_agent.channels.discord.bot import DiscordGateway
 from mango_agent.channels.telegram._processor import TelegramMessageProcessor
 from mango_agent.channels.telegram.bot import TelegramBot
 from mango_agent.shared.infrastructure.config import AppConfig, ConfigError, load_config
+from mango_agent.shared.infrastructure.logging import configure_logging
 
 from .container import MangoContainer
 
@@ -190,6 +191,8 @@ async def _async_main(argv: Sequence[str] | None = None) -> int:
     except ConfigError as exc:
         print(f"mango-agent: {exc}", file=sys.stderr)
         return 1
+
+    configure_logging(config.logging)
 
     container = MangoContainer()
     container.app_config.override(providers.Object(config))

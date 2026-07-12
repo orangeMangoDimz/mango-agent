@@ -20,6 +20,7 @@ from mango_agent.modules.attachments.adapters.r2_storage import (
     R2AttachmentStorage,
     R2StorageConfig,
 )
+from mango_agent.modules.attachments.application.cleanup import CleanUpAttachments
 from mango_agent.modules.attachments.application.use_cases import (
     GenerateAccess,
     LinkAttachmentToTask,
@@ -289,6 +290,11 @@ class MangoContainer(containers.DeclarativeContainer):
     )
     reject_or_expire_attachment = providers.Factory(
         RejectOrExpireAttachment,
+        uow_factory=unit_of_work,
+        storage=attachment_storage,
+    )
+    clean_attachments = providers.Factory(
+        CleanUpAttachments,
         uow_factory=unit_of_work,
         storage=attachment_storage,
     )

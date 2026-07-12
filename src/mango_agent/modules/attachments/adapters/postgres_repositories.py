@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import asyncpg
 from asyncpg.exceptions import ForeignKeyViolationError, UniqueViolationError
 
@@ -156,3 +158,25 @@ class PostgresAttachmentRepository(AttachmentRepository):
         if result == "UPDATE 0":
             raise NotFoundError("attachment not found")
         return updated
+
+    async def list_cleanup_eligible(
+        self,
+        now: Timestamp,
+        batch_size: int,
+    ) -> Sequence[Attachment]:
+        rows = await self._connection.fetch(
+            "SELECT * FROM attachments "
+            "WHERE lifecycle_status = ANY($1) "
+            "OR (lifecycle_status != 'Deleted' AND expires_at IS NOT NULL AND expires_at <= $2) "
+            "ORDER BY created_at ASC LIMIT $3",
+            [
+                AttachmentLifecycleStatus.REJECTED.value,
+                AttachmentLifecycleStatus.REJECTED_BY_VALIDATION.value,
+                AttachmentLifecycleStatus.EXPIRED.value,
+                AttachmentLifecycleStatus.ORPHANED.value,
+                AttachmentLifecycleStatus.CLEANUP_PENDING.value,
+            ],
+            now.value,
+            batch_size,
+        )
+        return tuple(_attachment_from_row(row) for row in rows)

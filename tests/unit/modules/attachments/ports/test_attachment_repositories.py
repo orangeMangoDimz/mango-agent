@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import pytest
 
 from mango_agent.modules.attachments.domain import (
@@ -12,7 +14,7 @@ from mango_agent.modules.attachments.domain import (
 from mango_agent.modules.attachments.ports.repositories import AttachmentRepository
 from mango_agent.shared.domain.errors import NotFoundError
 from mango_agent.shared.domain.ids import AttachmentId, TaskId, UserId
-from mango_agent.shared.domain.value_objects import PaginatedResult, Pagination
+from mango_agent.shared.domain.value_objects import PaginatedResult, Pagination, Timestamp
 from mango_agent.shared.ports.actor_scope import ActorScope
 
 
@@ -69,6 +71,25 @@ class FakeAttachmentRepository(AttachmentRepository):
         updated = attachment.transition_to(new_status)
         self._attachments[attachment_id] = updated
         return updated
+
+    async def list_cleanup_eligible(
+        self,
+        now: Timestamp,
+        batch_size: int,
+    ) -> Sequence[Attachment]:
+        eligible = (
+            AttachmentLifecycleStatus.REJECTED,
+            AttachmentLifecycleStatus.REJECTED_BY_VALIDATION,
+            AttachmentLifecycleStatus.EXPIRED,
+            AttachmentLifecycleStatus.ORPHANED,
+            AttachmentLifecycleStatus.CLEANUP_PENDING,
+        )
+        items = tuple(
+            a
+            for a in self._attachments.values()
+            if a.lifecycle_status in eligible or (a.expires_at is not None and a.expires_at <= now)
+        )
+        return items[:batch_size]
 
 
 @pytest.fixture

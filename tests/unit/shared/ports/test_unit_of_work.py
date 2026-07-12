@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import TracebackType
+
 from mango_agent.shared.ports.unit_of_work import UnitOfWork
 
 
@@ -19,6 +21,21 @@ class FakeUnitOfWork(UnitOfWork):
 
     async def rollback(self) -> None:
         self.rolled_back = True
+
+    async def __aenter__(self) -> FakeUnitOfWork:
+        await self.begin()
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        if exc is None:
+            await self.commit()
+        else:
+            await self.rollback()
 
 
 async def test_fake_unit_of_work_lifecycle() -> None:
