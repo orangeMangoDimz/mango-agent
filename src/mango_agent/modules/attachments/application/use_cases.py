@@ -12,12 +12,10 @@ from mango_agent.modules.attachments.domain import (
     StorageProvider,
 )
 from mango_agent.modules.attachments.ports import (
-    AttachmentRepository,
     AttachmentStorage,
     PresignedUrl,
     UploadRequest,
 )
-from mango_agent.modules.task_management.ports.repositories import TaskRepository
 from mango_agent.shared.domain.errors import (
     ConflictError,
     ForbiddenError,
@@ -28,6 +26,7 @@ from mango_agent.shared.domain.errors import (
 from mango_agent.shared.domain.ids import AttachmentId, TaskId
 from mango_agent.shared.domain.result import Result
 from mango_agent.shared.ports.actor_scope import ActorScope
+from mango_agent.shared.ports.unit_of_work import UnitOfWorkFactory
 
 SUPPORTED_IMAGE_MIME_TYPES = frozenset({"image/jpeg", "image/png", "image/webp"})
 MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024
@@ -48,9 +47,9 @@ def _validate_upload_request(request: UploadRequest) -> ValidationError | None:
 @final
 @dataclass(frozen=True, slots=True)
 class RegisterPendingUpload:
-    _repository: AttachmentRepository
-    _storage: AttachmentStorage
-    _bucket_name: str = DEFAULT_BUCKET_NAME
+    uow_factory: UnitOfWorkFactory
+    storage: AttachmentStorage
+    bucket_name: str = DEFAULT_BUCKET_NAME
 
     async def __call__(
         self,
@@ -58,16 +57,14 @@ class RegisterPendingUpload:
         request: UploadRequest,
     ) -> Result[Attachment, MangoError]:
         if actor.user_id != request.uploader_user_id:
-            return Result.failure(
-                ForbiddenError("actor does not match attachment uploader")
-            )
+            return Result.failure(ForbiddenError("actor does not match attachment uploader"))
 
         validation_error = _validate_upload_request(request)
         if validation_error is not None:
             return Result.failure(validation_error)
 
         try:
-            object_key = await self._storage.upload(request)
+            object_key = await self.storage.upload(request)
         except ValidationError as exc:
             return Result.failure(exc)
         except Exception as exc:
@@ -76,22 +73,27 @@ class RegisterPendingUpload:
         attachment = Attachment.create(
             uploader_user_id=request.uploader_user_id,
             storage_provider=StorageProvider.R2,
-            bucket_name=self._bucket_name,
+            bucket_name=self.bucket_name,
             object_key=object_key,
             original_filename=request.original_filename,
             mime_type=request.mime_type,
             file_size=len(request.content),
         ).transition_to(AttachmentLifecycleStatus.UPLOADED)
 
+        uow = self.uow_factory()
         try:
-            stored = await self._repository.register_pending(actor, attachment)
+            await uow.begin()
+            attachments = uow.attachments
+            assert attachments is not None
+            stored = await attachments.register_pending(actor, attachment)
+            await uow.commit()
+            return Result.success(stored)
         except MangoError as exc:
+            await uow.rollback()
             return await self._compensate(actor, object_key, attachment, exc)
         except Exception as exc:
-            return await self._compensate(
-                actor, object_key, attachment, InternalError(str(exc))
-            )
-        return Result.success(stored)
+            await uow.rollback()
+            return await self._compensate(actor, object_key, attachment, InternalError(str(exc)))
 
     async def _compensate(
         self,
@@ -101,11 +103,16 @@ class RegisterPendingUpload:
         original_error: MangoError,
     ) -> Result[Attachment, MangoError]:
         try:
-            await self._storage.delete(object_key)
+            await self.storage.delete(object_key)
         except Exception:
             orphan = attachment.transition_to(AttachmentLifecycleStatus.ORPHANED)
+            uow = self.uow_factory()
             with suppress(Exception):
-                await self._repository.register_pending(actor, orphan)
+                await uow.begin()
+                attachments = uow.attachments
+                assert attachments is not None
+                await attachments.register_pending(actor, orphan)
+                await uow.commit()
             return Result.failure(
                 InternalError(
                     f"upload failed and orphaned object remains: {original_error.message}"
@@ -121,8 +128,7 @@ class RegisterPendingUpload:
 @final
 @dataclass(frozen=True, slots=True)
 class LinkAttachmentToTask:
-    _repository: AttachmentRepository
-    _task_repository: TaskRepository
+    uow_factory: UnitOfWorkFactory
 
     async def __call__(
         self,
@@ -130,51 +136,66 @@ class LinkAttachmentToTask:
         attachment_id: AttachmentId,
         task_id: TaskId,
     ) -> Result[Attachment, MangoError]:
+        uow = self.uow_factory()
         try:
-            await self._repository.get_authorized(actor, attachment_id)
-        except MangoError as exc:
-            return Result.failure(exc)
+            await uow.begin()
+            attachments = uow.attachments
+            tasks = uow.tasks
+            assert attachments is not None
+            assert tasks is not None
 
-        try:
-            await self._task_repository.get(actor, task_id)
-        except MangoError as exc:
-            return Result.failure(
-                ForbiddenError(f"not authorized to access task: {exc.message}")
-            )
+            await attachments.get_authorized(actor, attachment_id)
 
-        try:
-            linked = await self._repository.link_to_task(actor, attachment_id, task_id)
+            try:
+                await tasks.get(actor, task_id)
+            except MangoError as exc:
+                await uow.rollback()
+                return Result.failure(
+                    ForbiddenError(f"not authorized to access task: {exc.message}")
+                )
+
+            linked = await attachments.link_to_task(actor, attachment_id, task_id)
+            await uow.commit()
+            return Result.success(linked)
         except MangoError as exc:
+            await uow.rollback()
             return Result.failure(exc)
         except Exception as exc:
+            await uow.rollback()
             return Result.failure(InternalError(f"failed to link attachment: {exc}"))
-        return Result.success(linked)
 
 
 @final
 @dataclass(frozen=True, slots=True)
 class AuthorizeRetrieval:
-    _repository: AttachmentRepository
+    uow_factory: UnitOfWorkFactory
 
     async def __call__(
         self,
         actor: ActorScope,
         attachment_id: AttachmentId,
     ) -> Result[Attachment, MangoError]:
+        uow = self.uow_factory()
         try:
-            attachment = await self._repository.get_authorized(actor, attachment_id)
+            await uow.begin()
+            attachments = uow.attachments
+            assert attachments is not None
+            attachment = await attachments.get_authorized(actor, attachment_id)
+            await uow.commit()
+            return Result.success(attachment)
         except MangoError as exc:
+            await uow.rollback()
             return Result.failure(exc)
         except Exception as exc:
+            await uow.rollback()
             return Result.failure(InternalError(f"failed to retrieve attachment: {exc}"))
-        return Result.success(attachment)
 
 
 @final
 @dataclass(frozen=True, slots=True)
 class GenerateAccess:
-    _repository: AttachmentRepository
-    _storage: AttachmentStorage
+    uow_factory: UnitOfWorkFactory
+    storage: AttachmentStorage
 
     async def __call__(
         self,
@@ -182,13 +203,13 @@ class GenerateAccess:
         attachment_id: AttachmentId,
         ttl_seconds: int = 300,
     ) -> Result[PresignedUrl, MangoError]:
-        authorized = await AuthorizeRetrieval(self._repository)(actor, attachment_id)
+        authorized = await AuthorizeRetrieval(self.uow_factory)(actor, attachment_id)
         if authorized.is_failure:
             return Result.failure(authorized.error)
 
         attachment = authorized.value
         try:
-            url = await self._storage.generate_presigned_url(
+            url = await self.storage.generate_presigned_url(
                 attachment.object_key, actor, ttl_seconds
             )
         except MangoError as exc:
@@ -201,39 +222,38 @@ class GenerateAccess:
 @final
 @dataclass(frozen=True, slots=True)
 class RejectOrExpireAttachment:
-    _repository: AttachmentRepository
-    _storage: AttachmentStorage
+    uow_factory: UnitOfWorkFactory
+    storage: AttachmentStorage
 
     async def __call__(
         self,
         actor: ActorScope,
         attachment_id: AttachmentId,
     ) -> Result[Attachment, MangoError]:
+        uow = self.uow_factory()
         try:
-            attachment = await self._repository.get_authorized(actor, attachment_id)
-        except MangoError as exc:
-            return Result.failure(exc)
+            await uow.begin()
+            attachments = uow.attachments
+            assert attachments is not None
+            attachment = await attachments.get_authorized(actor, attachment_id)
 
-        try:
             target_status = _resolve_reject_or_expire_status(attachment)
-        except ConflictError as exc:
-            return Result.failure(exc)
+            if target_status == attachment.lifecycle_status:
+                await uow.commit()
+                return Result.success(attachment)
 
-        if target_status == attachment.lifecycle_status:
-            return Result.success(attachment)
-
-        try:
-            updated = await self._repository.mark_lifecycle(
-                actor, attachment_id, target_status
-            )
+            updated = await attachments.mark_lifecycle(actor, attachment_id, target_status)
+            await uow.commit()
         except MangoError as exc:
+            await uow.rollback()
             return Result.failure(exc)
         except Exception as exc:
+            await uow.rollback()
             return Result.failure(InternalError(f"failed to update attachment status: {exc}"))
 
         if updated.lifecycle_status == AttachmentLifecycleStatus.CLEANUP_PENDING:
             with suppress(Exception):
-                await self._storage.delete(updated.object_key)
+                await self.storage.delete(updated.object_key)
 
         return Result.success(updated)
 

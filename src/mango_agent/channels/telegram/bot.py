@@ -24,10 +24,19 @@ class TelegramBot:
             )
         )
 
-    def start(self) -> None:
+    async def start(self) -> None:
         """Start the long-polling loop and block until shutdown."""
-        self._application.run_polling()
+        await self._application.initialize()
+        await self._application.start()
+        updater = self._application.updater
+        if updater is None:
+            raise RuntimeError("Telegram application has no updater")
+        await updater.start_polling()
 
     async def stop(self) -> None:
         """Stop the polling loop gracefully."""
+        updater = self._application.updater
+        if updater is not None:
+            await updater.stop()
         await self._application.stop()
+        await self._application.shutdown()

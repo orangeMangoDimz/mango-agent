@@ -14,6 +14,7 @@ from mango_agent.shared.domain.errors import ConflictError, NotFoundError, Unaut
 from mango_agent.shared.domain.ids import UserId
 from mango_agent.shared.domain.value_objects import PaginatedResult, Pagination
 from mango_agent.shared.ports.actor_scope import ActorScope
+from mango_agent.shared.ports.unit_of_work import UnitOfWork
 
 
 class FakeProviderIdentityRepository(ProviderIdentityRepository):
@@ -84,11 +85,7 @@ class FakeUserRepository(UserRepository):
             matches = list(self._users.values())
         else:
             term = search_term.lower()
-            matches = [
-                user
-                for user in self._users.values()
-                if term in user.display_name.lower()
-            ]
+            matches = [user for user in self._users.values() if term in user.display_name.lower()]
         total = len(matches)
         page = matches[pagination.offset : pagination.offset + pagination.limit]
         return PaginatedResult(
@@ -98,7 +95,7 @@ class FakeUserRepository(UserRepository):
         )
 
 
-class FakeIdentityUnitOfWork:
+class FakeIdentityUnitOfWork(UnitOfWork):
     """In-memory unit of work for identity use cases."""
 
     def __init__(self) -> None:

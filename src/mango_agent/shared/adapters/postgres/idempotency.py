@@ -28,8 +28,9 @@ class PostgresIdempotencyRepository(IdempotencyRepository):
         self,
         actor: ActorScope,
         key: IdempotencyKey,
+        operation_id: OperationId,
     ) -> OperationId | None:
-        operation_id = OperationId.generate()
+        now = datetime.now(tz=UTC)
         try:
             row = await self._connection.fetchrow(
                 "INSERT INTO idempotency_records "
@@ -44,7 +45,7 @@ class PostgresIdempotencyRepository(IdempotencyRepository):
                 actor.bot_id,
                 key.external_id,
                 actor.command,
-                datetime.now(tz=UTC),
+                now,
             )
         except UniqueViolationError as exc:
             raise ConflictError("idempotency key already claimed") from exc
@@ -55,7 +56,7 @@ class PostgresIdempotencyRepository(IdempotencyRepository):
             return None
 
         existing = await self._connection.fetchrow(
-            "SELECT id FROM idempotency_records "
+            "SELECT id, status FROM idempotency_records "
             "WHERE provider = $1 AND bot_instance = $2 AND operation_key = $3",
             self._provider(key),
             actor.bot_id,

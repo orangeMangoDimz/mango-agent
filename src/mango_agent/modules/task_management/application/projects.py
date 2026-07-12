@@ -9,7 +9,6 @@ from mango_agent.modules.conversation.domain import PendingConfirmation
 from mango_agent.modules.conversation.ports import ConfirmationStore, ConversationKey
 from mango_agent.modules.task_management.domain.project import Project
 from mango_agent.modules.task_management.ports.repositories import (
-    ProjectRepository,
     ProjectSearchQuery,
     TaskRepository,
     TaskSearchFilter,
@@ -24,7 +23,7 @@ from mango_agent.shared.domain.value_objects import (
     Timestamp,
 )
 from mango_agent.shared.ports.actor_scope import ActorScope
-from mango_agent.shared.ports.unit_of_work import UnitOfWork
+from mango_agent.shared.ports.unit_of_work import UnitOfWorkFactory
 
 CASCADE_BATCH_LIMIT = MAX_LIMIT
 
@@ -32,36 +31,48 @@ CASCADE_BATCH_LIMIT = MAX_LIMIT
 @final
 @dataclass(frozen=True, slots=True)
 class CreateProject:
-    _repo: ProjectRepository
+    uow_factory: UnitOfWorkFactory
 
     async def __call__(self, actor: ActorScope, title: str) -> Result[Project, MangoError]:
+        uow = self.uow_factory()
         try:
+            await uow.begin()
+            projects = uow.projects
+            assert projects is not None
             project = Project.create(actor.user_id, title)
-            await self._repo.create(actor, project)
-            return Result.success(project)
+            created = await projects.create(actor, project)
+            await uow.commit()
+            return Result.success(created)
         except MangoError as exc:
+            await uow.rollback()
             return Result.failure(exc)
 
 
 @final
 @dataclass(frozen=True, slots=True)
 class GetProject:
-    _repo: ProjectRepository
+    uow_factory: UnitOfWorkFactory
 
     async def __call__(
         self, actor: ActorScope, project_id: ProjectId
     ) -> Result[Project, MangoError]:
+        uow = self.uow_factory()
         try:
-            project = await self._repo.get(actor, project_id)
+            await uow.begin()
+            projects = uow.projects
+            assert projects is not None
+            project = await projects.get(actor, project_id)
+            await uow.commit()
             return Result.success(project)
         except MangoError as exc:
+            await uow.rollback()
             return Result.failure(exc)
 
 
 @final
 @dataclass(frozen=True, slots=True)
 class SearchProjects:
-    _repo: ProjectRepository
+    uow_factory: UnitOfWorkFactory
 
     async def __call__(
         self,
@@ -69,64 +80,78 @@ class SearchProjects:
         title_contains: str | None = None,
         pagination: Pagination | None = None,
     ) -> Result[PaginatedResult[Project], MangoError]:
+        uow = self.uow_factory()
         try:
+            await uow.begin()
+            projects = uow.projects
+            assert projects is not None
             query = ProjectSearchQuery(
                 owner_user_id=actor.user_id,
                 title_contains=title_contains,
             )
             page = pagination if pagination is not None else Pagination.default()
-            result = await self._repo.search(actor, query, page)
+            result = await projects.search(actor, query, page)
+            await uow.commit()
             return Result.success(result)
         except MangoError as exc:
+            await uow.rollback()
             return Result.failure(exc)
 
 
 @final
 @dataclass(frozen=True, slots=True)
 class UpdateProject:
-    _repo: ProjectRepository
+    uow_factory: UnitOfWorkFactory
 
     async def __call__(
         self, actor: ActorScope, project_id: ProjectId, title: str
     ) -> Result[Project, MangoError]:
+        uow = self.uow_factory()
         try:
-            project = await self._repo.get(actor, project_id)
+            await uow.begin()
+            projects = uow.projects
+            assert projects is not None
+            project = await projects.get(actor, project_id)
             updated = project.rename(title)
-            persisted = await self._repo.update(actor, updated)
+            persisted = await projects.update(actor, updated)
+            await uow.commit()
             return Result.success(persisted)
         except MangoError as exc:
+            await uow.rollback()
             return Result.failure(exc)
 
 
 @final
 @dataclass(frozen=True, slots=True)
 class DeleteProject:
-    _uow: UnitOfWork
-    _project_repo: ProjectRepository
-    _task_repo: TaskRepository
+    uow_factory: UnitOfWorkFactory
 
     async def __call__(self, actor: ActorScope, project_id: ProjectId) -> Result[None, MangoError]:
+        uow = self.uow_factory()
         try:
-            project = await self._project_repo.get(actor, project_id)
-        except MangoError as exc:
-            return Result.failure(exc)
+            await uow.begin()
+            projects = uow.projects
+            tasks = uow.tasks
+            assert projects is not None
+            assert tasks is not None
 
-        try:
-            await self._uow.begin()
-            await self._cascade_soft_delete_tasks(actor, project.id)
-            await self._project_repo.delete(actor, project.id)
-            await self._uow.commit()
+            project = await projects.get(actor, project_id)
+            await self._cascade_soft_delete_tasks(actor, project.id, tasks)
+            await projects.delete(actor, project.id)
+            await uow.commit()
             return Result.success(None)
         except MangoError as exc:
-            await self._uow.rollback()
+            await uow.rollback()
             return Result.failure(exc)
         except Exception as exc:
-            await self._uow.rollback()
+            await uow.rollback()
             return Result.failure(InternalError(str(exc)))
 
-    async def _cascade_soft_delete_tasks(self, actor: ActorScope, project_id: ProjectId) -> None:
+    async def _cascade_soft_delete_tasks(
+        self, actor: ActorScope, project_id: ProjectId, task_repo: TaskRepository
+    ) -> None:
         while True:
-            child_tasks = await self._task_repo.search(
+            child_tasks = await task_repo.search(
                 actor,
                 TaskSearchFilter(project_id=project_id),
                 Pagination(limit=CASCADE_BATCH_LIMIT, offset=0),
@@ -134,7 +159,7 @@ class DeleteProject:
             if not child_tasks.items:
                 return
             for task in child_tasks.items:
-                await self._task_repo.delete(actor, task.id)
+                await task_repo.delete(actor, task.id)
 
 
 @final

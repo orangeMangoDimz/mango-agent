@@ -136,9 +136,7 @@ async def test_create_and_consume_confirmation() -> None:
     key = _key()
     operation_id = OperationId.generate()
 
-    created = await create_confirmation(
-        key, operation_id, "delete_task", "task-123", _future()
-    )
+    created = await create_confirmation(key, operation_id, "delete_task", "task-123", _future())
     assert created.is_success
     assert created.value == 1
 
@@ -173,17 +171,13 @@ async def test_clear_completed_or_rejected_state() -> None:
     save_state = SaveScopedState(state_store)
     create_proposal = CreatePendingProposal(proposal_store)
     create_confirmation = CreatePendingConfirmation(confirmation_store)
-    clear_state = ClearCompletedOrRejectedState(
-        state_store, proposal_store, confirmation_store
-    )
+    clear_state = ClearCompletedOrRejectedState(state_store, proposal_store, confirmation_store)
     key = _key()
     state = ConversationState.create(_participant(key.user_id), key.bot_id)
 
     await save_state(key, state, 0)
     await create_proposal(key, OperationId.generate(), "Do it", (), _future())
-    await create_confirmation(
-        key, OperationId.generate(), "delete_project", "project-1", _future()
-    )
+    await create_confirmation(key, OperationId.generate(), "delete_project", "project-1", _future())
 
     cleared = await clear_state(key)
     assert cleared.is_success

@@ -18,8 +18,12 @@ class FakeIdempotencyRepository(IdempotencyRepository):
         self,
         actor: ActorScope,
         key: IdempotencyKey,
+        operation_id: OperationId,
     ) -> OperationId | None:
-        return self._operations.get(key)
+        if key in self._operations:
+            return self._operations[key]
+        self._operations[key] = operation_id
+        return None
 
     async def record_operation(
         self,
@@ -71,7 +75,8 @@ async def test_claim_event_returns_none_for_new_key(
     repo: FakeIdempotencyRepository,
 ) -> None:
     key = IdempotencyKey("event", "123")
-    assert await repo.claim_event(actor, key) is None
+    operation_id = OperationId.generate()
+    assert await repo.claim_event(actor, key, operation_id) is None
 
 
 async def test_record_and_lookup_operation(
@@ -82,7 +87,7 @@ async def test_record_and_lookup_operation(
     operation_id = OperationId.generate()
     await repo.record_operation(actor, key, operation_id)
     assert await repo.lookup_operation(actor, key) == operation_id
-    assert await repo.claim_event(actor, key) == operation_id
+    assert await repo.claim_event(actor, key, OperationId.generate()) == operation_id
 
 
 def test_idempotency_key_for_provider_event() -> None:

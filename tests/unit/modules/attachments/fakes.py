@@ -29,6 +29,7 @@ from mango_agent.shared.domain.errors import (
 from mango_agent.shared.domain.ids import AttachmentId, ProjectId, TaskId
 from mango_agent.shared.domain.value_objects import PaginatedResult, Pagination, Timestamp
 from mango_agent.shared.ports.actor_scope import ActorScope
+from mango_agent.shared.ports.unit_of_work import UnitOfWork
 
 
 @final
@@ -63,9 +64,7 @@ class FakeAttachmentStorage(AttachmentStorage):
     ) -> PresignedUrl:
         if object_key not in self._objects:
             raise NotFoundError(f"object {object_key} not found")
-        expires_at = Timestamp.from_datetime(
-            Timestamp.now().value + timedelta(seconds=ttl_seconds)
-        )
+        expires_at = Timestamp.from_datetime(Timestamp.now().value + timedelta(seconds=ttl_seconds))
         url = PresignedUrl(
             url=f"https://fake.storage/{object_key}?ttl={ttl_seconds}",
             expires_at=expires_at,
@@ -210,9 +209,7 @@ class FakeTaskRepository(TaskRepository):
         accessible = [
             task
             for task in self._tasks.values()
-            if self._actor_may_access_task(
-                actor, task, self._projects[task.project_id]
-            )
+            if self._actor_may_access_task(actor, task, self._projects[task.project_id])
         ]
         page = tuple(accessible[pagination.offset : pagination.offset + pagination.limit])
         return PaginatedResult(page, len(accessible), pagination)
@@ -238,3 +235,25 @@ class FakeTaskRepository(TaskRepository):
         updated = task.set_status(new_status)
         self._tasks[task_id] = updated
         return updated
+
+
+class FakeUnitOfWork(UnitOfWork):
+    def __init__(
+        self,
+        attachment_repository: FakeAttachmentRepository | None = None,
+        task_repository: FakeTaskRepository | None = None,
+    ) -> None:
+        self.attachments = attachment_repository or FakeAttachmentRepository()
+        self.tasks = task_repository or FakeTaskRepository()
+        self.begun = False
+        self.committed = False
+        self.rolled_back = False
+
+    async def begin(self) -> None:
+        self.begun = True
+
+    async def commit(self) -> None:
+        self.committed = True
+
+    async def rollback(self) -> None:
+        self.rolled_back = True
