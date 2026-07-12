@@ -15,10 +15,10 @@ Goal: Secondary channel. Reuse the same normalized contracts as Telegram; full p
 
 ## Checklist
 
-- [ ] Discord gateway event handling boundary.
-- [ ] Reuse inbound/outbound normalized contracts from task 30.
-- [ ] Map Discord user → internal user via identity use case.
-- [ ] Provider-specific formatting + thread/reply handling.
-- [ ] No business rules in adapter.
-- [ ] Contract tests with Discord event fixtures + fake agent.
-- [ ] Behind a feature flag / separate service; does not block MVP.
+- [x] Discord gateway event handling boundary.
+- [x] Reuse inbound/outbound normalized contracts from task 30.
+- [x] Map Discord user → internal user via identity use case.
+- [x] Provider-specific formatting + thread/reply handling.
+- [x] No business rules in adapter.
+- [x] Contract tests with Discord event fixtures + fake agent.
+- [x] Boundary lives in a separate gateway service; does not block MVP.

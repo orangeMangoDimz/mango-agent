@@ -59,6 +59,7 @@ def _make_key(
     conversation_id: str | None = None,
     user_id: UserId | None = None,
     command: str | None = None,
+    thread_id: str | None = None,
     provider: Provider = Provider.TELEGRAM,
 ) -> ConversationKey:
     return ConversationKey(
@@ -67,6 +68,7 @@ def _make_key(
         conversation_id=conversation_id or f"conv-{unique}",
         user_id=user_id or UserId.generate(),
         command=command or f"test-{unique}",
+        thread_id=thread_id,
     )
 
 
@@ -126,25 +128,36 @@ async def test_state_isolation(redis_client) -> None:
     client, unique = redis_client
     store = RedisConversationStateStore(client)
 
-    key_a = _make_key(unique, conversation_id="a")
+    shared_user_id = UserId.generate()
+    key_a = _make_key(unique, conversation_id="a", user_id=shared_user_id)
     key_b = _make_key(unique, conversation_id="b", provider=Provider.DISCORD)
     key_c = _make_key(unique, conversation_id="c", user_id=UserId.generate())
+    key_thread = _make_key(
+        unique,
+        conversation_id="a",
+        user_id=shared_user_id,
+        thread_id="thread-1",
+    )
 
     state_a = ConversationState.create(_participant(key_a.user_id), key_a.bot_id)
     state_b = ConversationState.create(_participant(key_b.user_id), key_b.bot_id)
     state_c = ConversationState.create(_participant(key_c.user_id), key_c.bot_id)
+    state_thread = ConversationState.create(_participant(key_thread.user_id), key_thread.bot_id)
 
     await store.save(key_a, state_a, 0)
     await store.save(key_b, state_b, 0)
     await store.save(key_c, state_c, 0)
+    await store.save(key_thread, state_thread, 0)
 
     loaded_a = await store.load(key_a)
     loaded_b = await store.load(key_b)
     loaded_c = await store.load(key_c)
+    loaded_thread = await store.load(key_thread)
 
     assert loaded_a is not None and loaded_a[0] == state_a
     assert loaded_b is not None and loaded_b[0] == state_b
     assert loaded_c is not None and loaded_c[0] == state_c
+    assert loaded_thread is not None and loaded_thread[0] == state_thread
 
 
 async def test_state_ttl(redis_client) -> None:

@@ -34,6 +34,7 @@ def _key(
     bot_id: str = "bot-1",
     conversation_id: str = "thread-1",
     command: str = "task_management",
+    thread_id: str | None = None,
 ) -> ConversationKey:
     return ConversationKey(
         provider=Provider.TELEGRAM,
@@ -41,6 +42,7 @@ def _key(
         conversation_id=conversation_id,
         user_id=UserId.generate(),
         command=command,
+        thread_id=thread_id,
     )
 
 
@@ -49,12 +51,13 @@ def _future(seconds: int = 60) -> Timestamp:
 
 
 def test_conversation_key_create() -> None:
-    key = _key()
+    key = _key(thread_id="topic-1")
     assert key.provider == Provider.TELEGRAM
     assert key.bot_id == "bot-1"
     assert key.conversation_id == "thread-1"
+    assert key.thread_id == "topic-1"
     assert key.command == "task_management"
-    assert str(key).startswith("conversation:telegram:bot-1:thread-1:")
+    assert str(key).startswith("conversation:telegram:bot-1:thread-1:thread-7-topic-1:")
 
 
 def test_conversation_key_empty_bot_id_raises() -> None:
@@ -70,6 +73,42 @@ def test_conversation_key_empty_conversation_id_raises() -> None:
 def test_conversation_key_empty_command_raises() -> None:
     with pytest.raises(ValidationError):
         _key(command="   ")
+
+
+def test_conversation_key_empty_thread_id_raises() -> None:
+    with pytest.raises(ValidationError):
+        _key(thread_id="   ")
+
+
+def test_conversation_key_thread_scope_changes_key() -> None:
+    user_id = UserId.generate()
+    base = ConversationKey(
+        provider=Provider.TELEGRAM,
+        bot_id="bot-1",
+        conversation_id="conversation-1",
+        user_id=user_id,
+        command="task_management",
+        thread_id=None,
+    )
+    threaded = ConversationKey(
+        provider=Provider.TELEGRAM,
+        bot_id="bot-1",
+        conversation_id="conversation-1",
+        user_id=user_id,
+        command="task_management",
+        thread_id="topic-1",
+    )
+    literal_separator = ConversationKey(
+        provider=Provider.TELEGRAM,
+        bot_id="bot-1",
+        conversation_id="conversation-1",
+        user_id=user_id,
+        command="task_management",
+        thread_id="-",
+    )
+
+    assert str(base) != str(threaded)
+    assert str(base) != str(literal_separator)
 
 
 def test_conversation_key_invalid_provider_raises() -> None:

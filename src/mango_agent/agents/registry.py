@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import final
+from typing import cast, final
 
 from mango_agent.agents.contract import Agent, AgentCommandError
 
-type AgentFactory = Callable[..., Agent]
+type AgentFactory = Callable[[object], Agent]
 
 __all__ = ["AgentFactory", "AgentRegistry"]
 
@@ -19,11 +19,15 @@ class AgentRegistry:
     def __init__(self) -> None:
         self._factories: dict[str, AgentFactory] = {}
 
-    def register(self, command: str, factory: AgentFactory) -> None:
+    def register[DependenciesT](
+        self,
+        command: str,
+        factory: Callable[[DependenciesT], Agent],
+    ) -> None:
         """Register a factory for the given command."""
         if not command.strip():
             raise AgentCommandError("command must not be empty")
-        self._factories[command] = factory
+        self._factories[command] = cast(AgentFactory, factory)
 
     def resolve(self, command: str) -> AgentFactory:
         """Return the factory registered for the given command."""
@@ -35,7 +39,7 @@ class AgentRegistry:
             )
         return factory
 
-    def build(self, command: str, dependencies: object) -> Agent:
+    def build[DependenciesT](self, command: str, dependencies: DependenciesT) -> Agent:
         """Resolve the command and build an agent instance using the provided dependencies."""
         factory = self.resolve(command)
         return factory(dependencies)

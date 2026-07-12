@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from typing import final
 
-from mango_agent.agents.contract import Agent, AgentResponse, NormalizedRequest
+from mango_agent.agents.contract import Agent, NormalizedRequest
 from mango_agent.modules.identity.application.use_cases import AuthenticatedContext
+from mango_agent.shared.channel_contracts import NormalizedOutboundResponse
 
 __all__ = ["TaskManagementAgent"]
 
@@ -21,7 +22,7 @@ class TaskManagementAgent(Agent):
         self,
         context: AuthenticatedContext,
         payload: NormalizedRequest,
-    ) -> AgentResponse:
-        return AgentResponse(
-            content=f"Task management agent received: {payload.message_text}",
+    ) -> NormalizedOutboundResponse:
+        return NormalizedOutboundResponse.final_text(
+            f"Task management agent received: {payload.message_text}",
         )

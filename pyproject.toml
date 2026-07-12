@@ -10,10 +10,14 @@ dependencies = [
     "anthropic>=0.116.0",
     "asyncpg>=0.31.0",
     "langsmith>=0.10.2",
+    "langchain>=1.0.0",
+    "langgraph>=1.0.0",
     "pydantic",
     "pydantic-settings",
     "python-dotenv",
     "redis>=8.0.1",
+    "python-telegram-bot>=22.8",
+    "discord-py>=2.7.1",
 ]
 
 [project.scripts]
@@ -50,6 +54,7 @@ known-first-party = ["mango_agent"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 addopts = "-ra"
+pythonpath = ["."]
 
 [tool.mypy]
 python_version = "3.13"
@@ -74,6 +79,14 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = ["langsmith", "langsmith.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["telegram", "telegram.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["discord", "discord.*"]
 ignore_missing_imports = true
 
 [tool.importlinter]

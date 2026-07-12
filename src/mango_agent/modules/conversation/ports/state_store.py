@@ -37,8 +37,9 @@ class ConversationKey:
     """Scoped key for a single conversation state entry.
 
     The key encodes the provider, bot instance, provider-side conversation
-    identifier, internal user, and agent command so that state is never shared
-    across users, bots, or commands.
+    identifier, optional provider-side thread identifier, internal user, and
+    agent command so that state is never shared across users, bots, threads,
+    or commands.
     """
 
     provider: Provider
@@ -46,6 +47,7 @@ class ConversationKey:
     conversation_id: str
     user_id: UserId
     command: str
+    thread_id: str | None = None
 
     def __post_init__(self) -> None:
         if not self.bot_id.strip():
@@ -54,15 +56,24 @@ class ConversationKey:
             raise ValidationError("conversation id must not be empty")
         if not self.command.strip():
             raise ValidationError("command must not be empty")
+        if self.thread_id is not None:
+            if not isinstance(self.thread_id, str) or not self.thread_id.strip():
+                raise ValidationError("thread_id must be a non-empty string or None")
+            object.__setattr__(self, "thread_id", self.thread_id.strip())
         if not isinstance(self.provider, Provider):
             raise ValidationError("provider must be a Provider value")
         if not isinstance(self.user_id, UserId):
             raise ValidationError("user_id must be a UserId")
 
     def __str__(self) -> str:
+        thread_scope = (
+            "no-thread"
+            if self.thread_id is None
+            else f"thread-{len(self.thread_id)}-{self.thread_id}"
+        )
         return (
             f"conversation:{self.provider.value}:"
-            f"{self.bot_id}:{self.conversation_id}:"
+            f"{self.bot_id}:{self.conversation_id}:{thread_scope}:"
             f"{self.user_id}:{self.command}"
         )
 
