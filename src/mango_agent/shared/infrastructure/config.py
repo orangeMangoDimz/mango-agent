@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Literal
 
-from pydantic import BaseModel, SecretStr, ValidationError
+from pydantic import BaseModel, Field, SecretStr, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -64,6 +64,27 @@ class LangSmithConfig(_BaseSettings):
     langsmith_project: str | None = None
 
 
+class AgentWorkflowConfig(_BaseSettings):
+    """Bounded execution settings for the task-management workflow.
+
+    The ``AGENT_`` prefix keeps these operational limits separate from model
+    provider configuration while retaining normal 12-factor environment-based
+    configuration.
+    """
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        env_prefix="AGENT_",
+        extra="ignore",
+        case_sensitive=False,
+    )
+
+    max_model_turns: int = Field(default=4, ge=1)
+    max_tool_calls: int = Field(default=8, ge=1)
+    max_invalid_tool_argument_repairs: int = Field(default=2, ge=1)
+
+
 class LoggingConfig(_BaseSettings):
     log_level: str = "INFO"
     env: str = "dev"
@@ -78,6 +99,7 @@ class AppConfig(BaseModel):
     redis: RedisConfig
     r2: R2Config
     langsmith: LangSmithConfig
+    agent_workflow: AgentWorkflowConfig
     logging: LoggingConfig
 
 
@@ -114,6 +136,7 @@ def load_config() -> AppConfig:
     redis = _try_build(RedisConfig, errors)
     r2 = _try_build(R2Config, errors)
     langsmith = _try_build(LangSmithConfig, errors)
+    agent_workflow = _try_build(AgentWorkflowConfig, errors)
     logging_cfg = _try_build(LoggingConfig, errors)
 
     if instance is not None:
@@ -177,6 +200,7 @@ def load_config() -> AppConfig:
     assert redis is not None
     assert r2 is not None
     assert langsmith is not None
+    assert agent_workflow is not None
     assert logging_cfg is not None
 
     return AppConfig(
@@ -187,5 +211,6 @@ def load_config() -> AppConfig:
         redis=redis,
         r2=r2,
         langsmith=langsmith,
+        agent_workflow=agent_workflow,
         logging=logging_cfg,
     )

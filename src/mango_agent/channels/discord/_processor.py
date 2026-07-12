@@ -1,0 +1,89 @@
+"""Process Discord events into normalized agent requests and deliver responses."""
+
+from __future__ import annotations
+
+import contextlib
+
+import discord
+
+from mango_agent.agents.contract import Agent
+from mango_agent.modules.identity.application.use_cases import (
+    AuthenticatedContext,
+    ResolveProviderIdentity,
+)
+from mango_agent.modules.identity.domain.provider import Provider
+from mango_agent.shared.domain.ids import UserId
+from mango_agent.shared.ports.actor_scope import ActorScope
+from mango_agent.shared.ports.idempotency import IdempotencyKey, IdempotencyRepository
+
+from ._delivery import send_response
+from ._normalization import build_normalized_message
+
+
+class DiscordProcessorError(Exception):
+    """Raised when a Discord event cannot be processed."""
+
+
+class DiscordMessageProcessor:
+    """Turn Discord messages into normalized requests, run the agent, and send results."""
+
+    def __init__(
+        self,
+        bot_id: str,
+        agent_command: str,
+        agent: Agent,
+        resolve_identity: ResolveProviderIdentity,
+        idempotency_repo: IdempotencyRepository,
+    ) -> None:
+        self._bot_id = bot_id
+        self._agent_command = agent_command
+        self._agent = agent
+        self._resolve_identity = resolve_identity
+        self._idempotency_repo = idempotency_repo
+
+    async def _resolve_user(self, author: discord.User | discord.Member) -> AuthenticatedContext:
+        display_name = (author.display_name or author.name or "Discord User").strip()
+        actor = ActorScope(
+            user_id=UserId.generate(),
+            bot_id=self._bot_id,
+            command=self._agent_command,
+        )
+        result = await self._resolve_identity(
+            actor,
+            Provider.DISCORD,
+            str(author.id),
+            author.name,
+            display_name,
+        )
+        if result.is_failure:
+            raise DiscordProcessorError(result.error.message)
+        return result.value
+
+    def _actor(self, context: AuthenticatedContext) -> ActorScope:
+        return ActorScope(
+            user_id=context.internal_user_id,
+            bot_id=context.bot_id,
+            command=context.command,
+        )
+
+    async def process_message(self, message: discord.Message) -> None:
+        """Handle an incoming Discord message."""
+
+        if message.author.bot:
+            return
+
+        try:
+            auth_context = await self._resolve_user(message.author)
+            actor = self._actor(auth_context)
+
+            key = IdempotencyKey.for_provider_event("discord", str(message.id))
+            existing = await self._idempotency_repo.claim_event(actor, key)
+            if existing is not None:
+                return
+
+            normalized = build_normalized_message(self._bot_id, self._agent_command, message)
+            response = await self._agent.execute(auth_context, normalized)
+            await send_response(message.channel, response)
+        except Exception as exc:
+            with contextlib.suppress(Exception):
+                await message.channel.send(f"Sorry, I couldn't process that: {exc}")

@@ -4,17 +4,17 @@ from __future__ import annotations
 
 import pytest
 
-from mango_agent.agents.contract import (
-    Agent,
-    AgentCommandError,
-    AgentResponse,
-    NormalizedRequest,
-)
+from mango_agent.agents.contract import Agent, AgentCommandError
 from mango_agent.agents.registry import AgentRegistry
 from mango_agent.agents.task_management import TaskManagementAgent
 from mango_agent.modules.identity.application.use_cases import AuthenticatedContext
 from mango_agent.modules.identity.domain.provider import Provider
+from mango_agent.shared.channel_contracts import (
+    NormalizedInboundMessage,
+    NormalizedOutboundResponse,
+)
 from mango_agent.shared.domain.ids import UserId
+from mango_agent.shared.domain.value_objects import Timestamp
 
 
 class FakeAgent(Agent):
@@ -26,9 +26,9 @@ class FakeAgent(Agent):
     async def execute(
         self,
         context: AuthenticatedContext,
-        payload: NormalizedRequest,
-    ) -> AgentResponse:
-        return AgentResponse(content=f"Fake agent: {payload.message_text}")
+        payload: NormalizedInboundMessage,
+    ) -> NormalizedOutboundResponse:
+        return NormalizedOutboundResponse.final_text(f"Fake agent: {payload.text}")
 
 
 def _make_context() -> AuthenticatedContext:
@@ -41,13 +41,22 @@ def _make_context() -> AuthenticatedContext:
     )
 
 
-def _make_request(message_text: str | None = "hello") -> NormalizedRequest:
-    return NormalizedRequest(
+def _make_request(message_text: str = "hello") -> NormalizedInboundMessage:
+    return NormalizedInboundMessage(
         provider=Provider.TELEGRAM,
         bot_id="test-bot",
+        agent_command="test-cmd",
+        provider_event_id="event-123",
         conversation_id="conv-123",
+        thread_id=None,
         provider_user_id="provider-123",
-        message_text=message_text,
+        display_name="Test User",
+        username="test-user",
+        message_id="message-123",
+        text=message_text,
+        attachments=(),
+        reply_to=None,
+        received_at=Timestamp.now(),
     )
 
 
@@ -90,5 +99,4 @@ async def test_task_management_agent_execute_returns_acknowledgment() -> None:
 
     response = await agent.execute(context, request)
 
-    assert response.content == "Task management agent received: create a task"
-    assert response.action is None
+    assert response.text == "Task management agent received: create a task"

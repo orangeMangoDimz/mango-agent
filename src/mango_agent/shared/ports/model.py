@@ -109,7 +109,7 @@ class ModelPort(ABC):
     @abstractmethod
     async def invoke(
         self,
-        messages: tuple[Message, ...],
+        messages: tuple[Message | ToolResult, ...],
         tools: tuple[Tool, ...] = (),
         temperature: float | None = None,
     ) -> ModelResponse:

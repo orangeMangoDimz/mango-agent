@@ -17,7 +17,6 @@ from mango_agent.shared.domain.errors import (
     InternalError,
     MangoError,
     NotFoundError,
-    UnauthorizedError,
 )
 from mango_agent.shared.domain.ids import UserId
 from mango_agent.shared.domain.result import Result
@@ -25,7 +24,6 @@ from mango_agent.shared.domain.value_objects import (
     MAX_LIMIT,
     PaginatedResult,
     Pagination,
-    Timestamp,
 )
 from mango_agent.shared.ports.actor_scope import ActorScope
 
@@ -61,7 +59,14 @@ class IdentityUnitOfWork(Protocol):
 
 
 class ResolveProviderIdentity:
-    """Resolve a provider-authenticated identity to an internal user."""
+    """Resolve a provider-authenticated identity to an internal user.
+
+    The provider identity is the source of truth. On first encounter a new
+    internal user is created; on subsequent encounters the existing internal
+    user linked to that provider identity is returned. The caller's
+    ``actor.user_id`` is used only for repository authorization scaffolding and
+    is not treated as the authoritative internal user id.
+    """
 
     def __init__(self, uow: IdentityUnitOfWork) -> None:
         self._uow = uow
@@ -81,33 +86,19 @@ class ResolveProviderIdentity:
                     actor, provider, provider_user_id
                 )
             except NotFoundError:
-                now = Timestamp.now()
-                user = User(
-                    id=actor.user_id,
-                    display_name=display_name.strip(),
-                    created_at=now,
-                    updated_at=now,
-                )
-                identity = ProviderIdentity.create(
-                    actor.user_id, provider, provider_user_id, username
-                )
+                user = User.create(display_name.strip())
+                identity = ProviderIdentity.create(user.id, provider, provider_user_id, username)
                 await self._uow.users.create(actor, user)
                 await self._uow.provider_identities.create(actor, identity)
             else:
-                if identity.user_id != actor.user_id:
-                    await self._uow.rollback()
-                    return Result.failure(
-                        UnauthorizedError("provider identity belongs to another user")
-                    )
-                try:
-                    user = await self._uow.users.get_by_id(actor, identity.user_id)
-                except NotFoundError as exc:
-                    await self._uow.rollback()
-                    return Result.failure(
-                        InternalError(
-                            f"provider identity references missing user: {exc}"
-                        )
-                    )
+                user = await self._uow.users.get_by_id(
+                    ActorScope(
+                        user_id=identity.user_id,
+                        bot_id=actor.bot_id,
+                        command=actor.command,
+                    ),
+                    identity.user_id,
+                )
             await self._uow.commit()
             return Result.success(
                 AuthenticatedContext(
@@ -132,9 +123,7 @@ class GetUser:
     def __init__(self, uow: IdentityUnitOfWork) -> None:
         self._uow = uow
 
-    async def __call__(
-        self, actor: ActorScope, user_id: UserId
-    ) -> Result[User, MangoError]:
+    async def __call__(self, actor: ActorScope, user_id: UserId) -> Result[User, MangoError]:
         try:
             result = await self._uow.users.search(
                 actor, UserSearchQuery(), Pagination(limit=MAX_LIMIT, offset=0)

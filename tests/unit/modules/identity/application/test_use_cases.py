@@ -12,7 +12,7 @@ from mango_agent.modules.identity.application.use_cases import (
 from mango_agent.modules.identity.domain.provider import Provider
 from mango_agent.modules.identity.domain.user import User
 from mango_agent.modules.identity.ports.repositories import UserSearchQuery
-from mango_agent.shared.domain.errors import NotFoundError, UnauthorizedError
+from mango_agent.shared.domain.errors import NotFoundError
 from mango_agent.shared.domain.ids import UserId
 from mango_agent.shared.domain.value_objects import Pagination
 from mango_agent.shared.ports.actor_scope import ActorScope
@@ -49,19 +49,24 @@ async def test_resolve_creates_new_user_and_identity_on_first_encounter(
 
     assert result.is_success
     context = result.value
-    assert context.internal_user_id == actor.user_id
+    assert context.internal_user_id is not None
     assert context.bot_id == "test-bot"
     assert context.command == "test-cmd"
     assert context.provider == Provider.TELEGRAM
     assert context.provider_user_id == "telegram-123"
 
-    user = await uow.users.get_by_id(actor, actor.user_id)
+    user_actor = ActorScope(
+        user_id=context.internal_user_id,
+        bot_id="test-bot",
+        command="test-cmd",
+    )
+    user = await uow.users.get_by_id(user_actor, context.internal_user_id)
     assert user.display_name == "Alice"
 
     identity = await uow.provider_identities.get_by_natural_key(
         actor, Provider.TELEGRAM, "telegram-123"
     )
-    assert identity.user_id == actor.user_id
+    assert identity.user_id == context.internal_user_id
     assert identity.username == "alice"
     assert uow.committed
 
@@ -91,26 +96,24 @@ async def test_resolve_returns_existing_user_and_does_not_duplicate(
     assert second.is_success
     assert second.value.internal_user_id == first.value.internal_user_id
 
-    search_result = await uow.users.search(
-        actor, UserSearchQuery(), Pagination.default()
-    )
+    search_result = await uow.users.search(actor, UserSearchQuery(), Pagination.default())
     assert search_result.total == 1
 
 
-async def test_resolve_rejects_cross_user_identity(
+async def test_resolve_returns_same_internal_user_for_separate_provider_sessions(
     uow: FakeIdentityUnitOfWork,
 ) -> None:
     actor_a = ActorScope(user_id=UserId.generate(), bot_id="bot", command="cmd")
     actor_b = ActorScope(user_id=UserId.generate(), bot_id="bot", command="cmd")
 
     resolve = ResolveProviderIdentity(uow)
-    await resolve(actor_a, Provider.TELEGRAM, "telegram-123", "alice", "Alice")
+    first = await resolve(actor_a, Provider.TELEGRAM, "telegram-123", "alice", "Alice")
+    second = await resolve(actor_b, Provider.TELEGRAM, "telegram-123", "alice", "Alice")
 
-    result = await resolve(actor_b, Provider.TELEGRAM, "telegram-123", "alice", "Alice")
-
-    assert result.is_failure
-    assert isinstance(result.error, UnauthorizedError)
-    assert uow.rolled_back
+    assert first.is_success
+    assert second.is_success
+    assert first.value.internal_user_id == second.value.internal_user_id
+    assert uow.committed
 
 
 async def test_get_user_for_self_and_other_known_user(

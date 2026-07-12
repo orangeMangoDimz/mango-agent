@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 import pytest
 
+from mango_agent.modules.conversation.domain import PendingConfirmation
+from mango_agent.modules.conversation.ports import ConversationKey
+from mango_agent.modules.identity.domain.provider import Provider
 from mango_agent.modules.task_management.application.projects import (
     CreateProject,
+    DeleteConfirmedProject,
     DeleteProject,
     GetProject,
     SearchProjects,
@@ -13,11 +19,12 @@ from mango_agent.modules.task_management.application.projects import (
 )
 from mango_agent.modules.task_management.domain.task import Task
 from mango_agent.modules.task_management.ports.repositories import TaskSearchFilter
-from mango_agent.shared.domain.errors import NotFoundError
-from mango_agent.shared.domain.ids import UserId
-from mango_agent.shared.domain.value_objects import Pagination
+from mango_agent.shared.domain.errors import ConflictError, NotFoundError
+from mango_agent.shared.domain.ids import OperationId, UserId
+from mango_agent.shared.domain.value_objects import Pagination, Timestamp
 from mango_agent.shared.ports.actor_scope import ActorScope
 
+from ...conversation.fakes import FakeConfirmationStore
 from ..fakes import (
     FakeProjectRepository,
     FakeTaskRepository,
@@ -48,6 +55,22 @@ def task_repo(project_repo: FakeProjectRepository) -> FakeTaskRepository:
 @pytest.fixture
 def uow() -> FakeUnitOfWork:
     return FakeUnitOfWork()
+
+
+@pytest.fixture
+def confirmation_store() -> FakeConfirmationStore:
+    return FakeConfirmationStore()
+
+
+@pytest.fixture
+def conversation_key(owner: ActorScope) -> ConversationKey:
+    return ConversationKey(
+        provider=Provider.TELEGRAM,
+        bot_id="test-bot",
+        conversation_id="project-conversation",
+        user_id=owner.user_id,
+        command="test",
+    )
 
 
 async def test_create_project_normalizes_title(
@@ -97,9 +120,7 @@ async def test_search_projects_scoped_to_actor(
     assert result.value.items[0].title == "Owner Project"
 
 
-async def test_update_project_title(
-    owner: ActorScope, project_repo: FakeProjectRepository
-) -> None:
+async def test_update_project_title(owner: ActorScope, project_repo: FakeProjectRepository) -> None:
     created = await CreateProject(project_repo)(owner, "Mango")
     result = await UpdateProject(project_repo)(owner, created.value.id, "Mango 2")
 
@@ -170,3 +191,32 @@ async def test_cross_user_rejection_for_all_operations(
     assert search_result.value.total == 0
 
 
+async def test_delete_project_requires_matching_confirmation(
+    owner: ActorScope,
+    project_repo: FakeProjectRepository,
+    task_repo: FakeTaskRepository,
+    uow: FakeUnitOfWork,
+    confirmation_store: FakeConfirmationStore,
+    conversation_key: ConversationKey,
+) -> None:
+    project = (await CreateProject(project_repo)(owner, "Mango")).value
+    delete_project = DeleteProject(uow, project_repo, task_repo)
+    use_case = DeleteConfirmedProject(delete_project, confirmation_store)
+
+    missing = await use_case(owner, conversation_key, project.id, None)
+    assert missing.is_failure
+    assert isinstance(missing.error, ConflictError)
+    assert not project_repo.is_deleted(project.id)
+
+    operation_id = OperationId.generate()
+    confirmation = PendingConfirmation.create(
+        operation_id=operation_id,
+        operation_type="delete_project",
+        target_ref=str(project.id),
+        expires_at=Timestamp.from_datetime(Timestamp.now().value + timedelta(hours=2)),
+    )
+    await confirmation_store.create(conversation_key, confirmation)
+
+    deleted = await use_case(owner, conversation_key, project.id, operation_id)
+    assert deleted.is_success
+    assert project_repo.is_deleted(project.id)
