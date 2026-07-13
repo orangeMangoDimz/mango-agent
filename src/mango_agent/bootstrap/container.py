@@ -9,12 +9,13 @@ simple callables.
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
-from typing import Any, final
+from typing import Any, Final, final
 
 import redis.asyncio as redis
 from dependency_injector import containers, providers
+from langchain.chat_models import init_chat_model
 
-from mango_agent.integrations.llm.anthropic_model import AnthropicModelPort
+from mango_agent.integrations.llm.langchain_model import LangChainModelPort
 from mango_agent.integrations.llm.langsmith_tracing import LangSmithTracingPort
 from mango_agent.modules.attachments.adapters.r2_storage import (
     R2AttachmentStorage,
@@ -67,11 +68,13 @@ from mango_agent.modules.task_management.application.tasks import (
 )
 from mango_agent.shared.adapters.postgres.idempotency import PostgresIdempotencyRepository
 from mango_agent.shared.adapters.postgres.unit_of_work import PostgresUnitOfWork
-from mango_agent.shared.infrastructure.config import AppConfig
+from mango_agent.shared.infrastructure.config import AppConfig, ConfigError
 from mango_agent.shared.infrastructure.postgres.connection import PostgresConnectionPool
 from mango_agent.shared.ports.idempotency import IdempotencyRepository
 from mango_agent.shared.ports.model import ModelPort
 from mango_agent.shared.ports.tracing import TracingPort
+
+DEFAULT_MODEL_MAX_TOKENS: Final = 1024
 
 
 async def _postgres_pool(dsn: str) -> AsyncGenerator[PostgresConnectionPool]:
@@ -124,10 +127,19 @@ def _attachment_storage(config: AppConfig) -> AttachmentStorage:
 
 
 def _model_port(config: AppConfig) -> ModelPort:
-    return AnthropicModelPort(
-        model=config.model.anthropic_model,
-        api_key=config.model.anthropic_api_key,
-    )
+    try:
+        chat_model = init_chat_model(
+            config.model.model_name,
+            api_key=config.model.anthropic_api_key.get_secret_value(),
+            max_tokens=DEFAULT_MODEL_MAX_TOKENS,
+        )
+    except (ImportError, TypeError, ValueError):
+        raise ConfigError(
+            "model initialization failed; verify MODEL_NAME, ANTHROPIC_API_KEY, "
+            "and the LangChain provider integration"
+        ) from None
+
+    return LangChainModelPort(chat_model)
 
 
 def _tracing_port(config: AppConfig) -> TracingPort:

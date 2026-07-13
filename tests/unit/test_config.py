@@ -15,7 +15,7 @@ ENV_VARS = [
     "DATABASE_URL",
     "REDIS_URL",
     "ANTHROPIC_API_KEY",
-    "ANTHROPIC_MODEL",
+    "MODEL_NAME",
     "TELEGRAM_BOT_TOKEN",
     "DISCORD_TOKEN",
     "R2_ACCOUNT_ID",
@@ -46,7 +46,7 @@ def _set_required(monkeypatch: pytest.MonkeyPatch, *, channel: str = "telegram")
     monkeypatch.setenv("DATABASE_URL", "postgresql://mango:mango@localhost:5432/mango")
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
-    monkeypatch.setenv("ANTHROPIC_MODEL", "claude-test")
+    monkeypatch.setenv("MODEL_NAME", "anthropic:claude-test")
     if channel == "telegram":
         monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
     else:
@@ -63,7 +63,7 @@ def test_missing_required_raises_config_error(clean_env: Path) -> None:
     assert "database_url" in message
     assert "redis_url" in message
     assert "anthropic_api_key" in message
-    assert "anthropic_model" in message
+    assert "model_name" in message
 
 
 def test_invalid_channel_raises_config_error(
@@ -110,9 +110,21 @@ def test_valid_config_loads(clean_env: Path, monkeypatch: pytest.MonkeyPatch) ->
     assert config.channel.channel == "telegram"
     assert config.channel.telegram_bot_token is not None
     assert config.channel.telegram_bot_token.get_secret_value() == "tok"
-    assert config.model.anthropic_model == "claude-test"
+    assert config.model.model_name == "anthropic:claude-test"
     assert config.logging.env == "dev"
     assert config.langsmith.langsmith_enabled is False
+
+
+def test_model_name_requires_anthropic_provider_prefix(
+    clean_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _set_required(monkeypatch)
+    monkeypatch.setenv("MODEL_NAME", "claude-test")
+
+    with pytest.raises(ConfigError) as excinfo:
+        load_config()
+
+    assert "anthropic:<model-id>" in str(excinfo.value)
 
 
 def test_r2_all_or_nothing_fails(clean_env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -178,7 +190,7 @@ def test_dotenv_file_loaded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
         "DATABASE_URL=postgresql://mango:mango@localhost:5432/mango\n"
         "REDIS_URL=redis://localhost:6379/0\n"
         "ANTHROPIC_API_KEY=sk-test\n"
-        "ANTHROPIC_MODEL=claude-test\n"
+        "MODEL_NAME=anthropic:claude-test\n"
         "TELEGRAM_BOT_TOKEN=tok\n"
     )
     monkeypatch.chdir(tmp_path)

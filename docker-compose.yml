@@ -42,7 +42,7 @@ services:
       DISCORD_TOKEN: ${DISCORD_TOKEN:-}
       # Model provider (required).
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-}
+      MODEL_NAME: ${MODEL_NAME:-}
       # Cloudflare R2 (optional; all-or-nothing).
       R2_ACCOUNT_ID: ${R2_ACCOUNT_ID:-}
       R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:-}

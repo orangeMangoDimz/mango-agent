@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Literal
 
-from pydantic import BaseModel, Field, SecretStr, ValidationError
+from pydantic import BaseModel, Field, SecretStr, ValidationError, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -40,7 +40,15 @@ class ChannelConfig(_BaseSettings):
 
 class ModelConfig(_BaseSettings):
     anthropic_api_key: SecretStr
-    anthropic_model: str
+    model_name: str
+
+    @field_validator("model_name")
+    @classmethod
+    def validate_model_name(cls, value: str) -> str:
+        provider, separator, model = value.partition(":")
+        if provider != "anthropic" or not separator or not model.strip():
+            raise ValueError("must use the provider-qualified form 'anthropic:<model-id>'")
+        return value
 
 
 class PostgresConfig(_BaseSettings):
@@ -176,7 +184,7 @@ def load_config() -> AppConfig:
             errors,
             {
                 "anthropic_api_key": model.anthropic_api_key,
-                "anthropic_model": model.anthropic_model,
+                "model_name": model.model_name,
             },
         )
 

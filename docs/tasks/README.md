@@ -39,7 +39,7 @@ Conventions: Hexagonal Architecture, `uv`, dependency direction `Channels → Ag
 - [ ] [16 — PostgreSQL repository adapters](16-postgresql-repository-adapters.md) `[MVP]`
 - [ ] [17 — Redis conversation-state adapter](17-redis-conversation-state-adapter.md) `[MVP]`
 - [ ] [18 — Cloudflare R2 attachment adapter](18-cloudflare-r2-attachment-adapter.md) `[MVP]`
-- [ ] [19 — Anthropic model adapter](19-anthropic-model-adapter.md) `[MVP]`
+- [ ] [19 — LangChain model adapter](19-anthropic-model-adapter.md) `[MVP]`
 - [ ] [20 — LangSmith tracing integration](20-langsmith-tracing-integration.md) `[MVP]`
 
 ## Phase 4 — Application use cases

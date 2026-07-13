@@ -1,7 +1,7 @@
 ---
 source: https://app.notion.com/p/Mango-Agent-System-Design-Document-39b150aa4f1d800092b5faa6e7f06390
 notion_page_id: 39b150aa-4f1d-8000-92b5-faa6e7f06390
-fetched_at: 2026-07-12
+fetched_at: 2026-07-13
 fetched_via: Notion MCP (notion-fetch)
 ---
 
@@ -10,7 +10,7 @@ fetched_via: Notion MCP (notion-fetch)
 **Document version:** v0.3.0  
 **Product version:** Mango Agent v1.0.0  
 **Status:** Draft  
-**Updated at:** July 12, 2026  
+**Updated at:** July 13, 2026
 **Related document:** Mango Agent Product Requirements Document  
 **Reading guide:** Read the one-sentence "Simple example" first. Then read the technical details only when you need them.
 
@@ -122,7 +122,7 @@ Mango Agent is deployed as multiple processes but developed as one modular appli
 
 ### 4.2 Dependency inversion
 
-The application core defines ports. Provider and infrastructure modules implement them. Domain and application modules must not import Telegram, Discord, PostgreSQL drivers, Redis clients, R2 SDKs, Anthropic SDKs, or LangSmith-specific code.
+The application core defines ports. Provider and infrastructure modules implement them. Domain and application modules must not import Telegram, Discord, PostgreSQL drivers, Redis clients, R2 SDKs, LangChain, model-provider SDKs, or LangSmith-specific code. Model integrations use LangChain's chat-model abstraction, and Mango source code must not import provider SDKs directly.
 
 ### 4.3 Explicit user scope
 
@@ -298,7 +298,7 @@ flowchart TB
         PgAdapter[PostgreSQL Adapters]
         RedisAdapter[Redis Adapter]
         R2Adapter[R2 Adapter]
-        AnthropicAdapter[Anthropic Adapter]
+        LangChainAdapter[LangChain Model Adapter]
     end
 
     TelegramAdapter --> Normalizer
@@ -326,7 +326,7 @@ flowchart TB
     RepoPorts --> PgAdapter
     StatePort --> RedisAdapter
     StoragePort --> R2Adapter
-    ModelPort --> AnthropicAdapter
+    ModelPort --> LangChainAdapter
 ```
 
 ### 8.1 Module responsibilities
@@ -1159,7 +1159,7 @@ LangSmith trace content must follow a deliberate privacy policy. Full message te
 - PostgreSQL repository contracts
 - Redis state serialization and expiration
 - R2 object upload, authorization, and deletion
-- Anthropic model adapter request and response mapping
+- LangChain model adapter request and response mapping for the configured Anthropic model
 
 ### 24.5 Integration tests
 
@@ -1266,7 +1266,7 @@ The implementation should expose logical modules for:
 - Repository ports and PostgreSQL implementations
 - Conversation-state port and Redis implementation
 - Attachment-storage port and R2 implementation
-- Model port and Anthropic implementation
+- Model port and LangChain implementation configured for Anthropic
 - Observability
 - Migration and operational tooling
 

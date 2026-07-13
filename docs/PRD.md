@@ -1,7 +1,7 @@
 ---
 source: https://app.notion.com/p/Mango-Agent-PRD-39a150aa4f1d806ebfdfdff3726be810
 notion_page_id: 39a150aa-4f1d-806e-bfdf-dff3726be810
-fetched_at: 2026-07-12
+fetched_at: 2026-07-13
 fetched_via: Notion MCP (notion-fetch)
 ---
 
@@ -9,7 +9,7 @@ fetched_via: Notion MCP (notion-fetch)
 
 **Version:** v1.0.0  
 **Status:** Draft  
-**Updated at:** July 12, 2026, 12:47 PM WIB  
+**Updated at:** July 13, 2026, 1:51 PM WIB
 **Product type:** Multi-user personal AI agent  
 **Primary interface:** Telegram  
 **Secondary interface:** Discord  
@@ -1011,7 +1011,7 @@ Application services, agents, and channel adapters must receive dependencies thr
 
 Mango Agent v1.0.0 is a multi-user personal task-management agent built as a Python modular monolith.
 
-It uses Anthropic models with LangChain and LangGraph to interpret text and image-supported requests, manage temporary conversation state, prepare structured project and task operations, and execute those operations through explicit tools.
+It invokes Anthropic models through LangChain's chat-model abstraction and uses LangGraph to interpret text and image-supported requests, manage temporary conversation state, prepare structured project and task operations, and execute those operations through explicit tools.
 
 Telegram is the primary user interface. Mango Agent runs as a Dockerized Python modular monolith in a single monorepo. Channel adapters invoke agent workflows and application services directly in process. PostgreSQL is the persistent source of truth for users, projects, tasks, and attachment metadata; Redis manages active workflow state; Cloudflare R2 stores uploaded images; and LangSmith provides agent observability.
 
@@ -1040,7 +1040,7 @@ The following folders define the initial Hexagonal Architecture boundaries. Indi
 | `application/` | Contains use cases that coordinate domain rules, repositories, transactions, and external ports. |
 | `ports/` | Defines interfaces required by the application, such as repositories, Unit of Work, state storage, and object storage. |
 | `adapters/` | Contains concrete implementations of ports using PostgreSQL, Redis, Cloudflare R2, or another provider. |
-| `integrations/` | Contains shared external integrations such as Anthropic and LangSmith. |
+| `integrations/` | Contains shared external integrations such as the LangChain model adapter and LangSmith. |
 | `shared/` | Contains small reusable components shared by multiple modules. It should not become a dumping ground for domain logic. |
 | `tests/` | Contains all automated tests. |
 | `tests/unit/` | Tests domain rules, use cases, and agents without real infrastructure. |

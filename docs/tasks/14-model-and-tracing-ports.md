@@ -10,7 +10,7 @@ refs:
 
 # 14 — Model port + tracing port
 
-Goal: Provider-independent model port (Anthropic impl later) and a tracing port (LangSmith impl later) so agent/core never import SDKs.
+Goal: Provider-independent model port (LangChain implementation later) and a tracing port (LangSmith impl later) so agent/core never import SDKs.
 
 ## Checklist
 
@@ -18,5 +18,5 @@ Goal: Provider-independent model port (Anthropic impl later) and a tracing port 
 - [ ] `TracingPort`: start/end span, set attributes, link correlation ID.
 - [ ] Model output is treated as untrusted input (validated against structured app input).
 - [ ] Trace privacy: redaction hooks for full message text, image-derived text, credentials, object URLs, sensitive notes.
-- [ ] No Anthropic/LangSmith SDK types in ports or core.
+- [ ] No model-provider/LangSmith SDK types in ports or core.
 - [ ] Ports allow deterministic fakes for agent tests.
